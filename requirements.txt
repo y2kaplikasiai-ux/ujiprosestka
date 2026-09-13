@@ -1,7 +1,7 @@
 # --- Framework Aplikasi & UI ---
 streamlit>=1.30.0
 
-# --- Pengolahan & Komputasi Data ---
+# --- Pengolahan & Komputasi Data --- coba-coba aja
 pandas>=2.0.0
 numpy>=1.24.0
 scipy>=1.10.0
