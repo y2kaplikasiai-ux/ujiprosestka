@@ -349,23 +349,50 @@ def render_tab_region(df_matrix_school, dfs):
 
         if (
             "skor_konversi" in c_str
-            or "skor_mentah" in c_str
-            or "nilai" in c_str
+            or "nilai_konversi" in c_str
+            or "nilai_scaled" in c_str
         ):
-            name_label = c.replace("_", " ").upper()
-            if (
-                "CTT" in name_label
-                or "KLASIK" in name_label
-                or "MENTAH" in name_label
-            ):
-                name_label = "Klasik / CTT (Skala 0-100)"
-
+            name_label = f"Konversi ({c.replace('_', ' ').upper()})"
             df_temp = pd.DataFrame()
             df_temp["username_clean"] = df_base["username_clean"]
             df_temp[name_label] = pd.to_numeric(df_base[c], errors="coerce")
             score_columns_map[name_label] = df_temp.drop_duplicates(
                 "username_clean"
             )
+        elif (
+            "skor_mentah" in c_str
+            or "nilai" in c_str
+            and not any(
+                k in score_columns_map for k in ["Klasik / CTT (Skala 0-100)"]
+            )
+        ):
+            vals = pd.to_numeric(df_base[c], errors="coerce")
+            max_val_found = vals.max() if not vals.empty else 25.0
+            if max_val_found <= 50 and max_val_found > 0:
+                name_label = "Klasik / CTT (Skala 0-100)"
+                df_temp = pd.DataFrame()
+                df_temp["username_clean"] = df_base["username_clean"]
+                df_temp[name_label] = (vals / max_val_found) * 100.0
+                score_columns_map[name_label] = df_temp.drop_duplicates(
+                    "username_clean"
+                )
+
+    if "Klasik / CTT (Skala 0-100)" not in score_columns_map:
+        for c in df_base.columns:
+            if "skor" in str(c).lower() or "nilai" in str(c).lower():
+                vals = pd.to_numeric(df_base[c], errors="coerce")
+                if not vals.dropna().empty:
+                    m_val = vals.max()
+                    name_label = "Klasik / CTT (Skala 0-100)"
+                    df_temp = pd.DataFrame()
+                    df_temp["username_clean"] = df_base["username_clean"]
+                    df_temp[name_label] = (
+                        (vals / m_val) * 100.0 if m_val > 0 else vals
+                    )
+                    score_columns_map[name_label] = df_temp.drop_duplicates(
+                        "username_clean"
+                    )
+                    break
 
     if not score_columns_map:
         st.info(
@@ -374,14 +401,19 @@ def render_tab_region(df_matrix_school, dfs):
         )
         return
 
-    col_sel1, _ = st.columns([1, 2])
+    col_sel1, _ = st.columns(2)
     with col_sel1:
+        sorted_opt_keys = sorted(
+            list(score_columns_map.keys()),
+            key=lambda x: 0 if "KLASIK" in x.upper() or "CTT" in x.upper() else 1,
+        )
         selected_score_label = st.selectbox(
             "🎯 Pilih Metode Skor Konversi:",
-            options=list(score_columns_map.keys()),
+            options=sorted_opt_keys,
+            index=0,
             help=(
-                "Pilih model nilai konversi yang akan dianalisis distribusinya"
-                " secara geografis."
+                "Pilih model nilai konversi (skala 0-100) yang akan dianalisis"
+                " distribusinya secara geografis."
             ),
         )
 
@@ -423,7 +455,7 @@ def render_tab_region(df_matrix_school, dfs):
         m1.metric(
             "Total Peserta Terjangkau", f"{total_peserta:,}".replace(",", ".")
         )
-        m2.metric("Rata-Rata Nasional", f"{avg_nat:.2f}")
+        m2.metric("Rata-Rata Nasional (Konversi)", f"{avg_nat:.2f}")
         m3.metric("Standar Deviasi", f"{std_val:.2f}")
         m4.metric(
             "Disparitas",
@@ -440,7 +472,7 @@ def render_tab_region(df_matrix_school, dfs):
     st.markdown("### 🗺️ 2. Peta Interaktif Sebaran Nilai (Provinsi & Kabupaten)")
 
     prov_list = sorted(list(df_merged["nama_provinsi"].unique()))
-    col_nav1, col_nav2 = st.columns([2, 1])
+    col_nav1, col_nav2 = st.columns(2)
 
     with col_nav1:
         selected_prov_view = st.selectbox(
@@ -470,12 +502,10 @@ def render_tab_region(df_matrix_school, dfs):
 
     custom_red_to_blue = ["red", "yellow", "blue"]
 
-    # LEVEL 1: PETA PROVINSI (NASIONAL)
     if st.session_state.selected_geo_prov is None:
         geojson_id = _load_geojson_indonesia()
 
         if not stats_prov.empty and geojson_id:
-            # Memetakan berbagai kemungkinan key properti pada file GeoJSON secara dinamis
             for feature in geojson_id.get("features", []):
                 props = feature.get("properties", {})
                 found_name = None
@@ -536,7 +566,6 @@ def render_tab_region(df_matrix_school, dfs):
                 ),
             )
 
-            # Mempertegas garis batas antar provinsi agar terlihat jelas (warna putih terang & ketebalan 1.8px)
             fig_map.update_traces(
                 marker_line_color="#ffffff", marker_line_width=1.8
             )
@@ -551,7 +580,7 @@ def render_tab_region(df_matrix_school, dfs):
                 subunitcolor="#ffffff",
                 subunitwidth=1.8,
                 showland=True,
-                landcolor="#1c212c",  # Warna daratan dibuat sedikit lebih kontras dari background
+                landcolor="#1c212c",
                 showocean=True,
                 oceancolor="#0e1117",
             )
@@ -570,7 +599,6 @@ def render_tab_region(df_matrix_school, dfs):
                 "⚠️ Gagal memuat data GeoJSON batas provinsi Indonesia."
             )
 
-    # LEVEL 2: PETA DETAIL KABUPATEN/KOTA (DRILL-DOWN)
     else:
         target_prov = st.session_state.selected_geo_prov
         st.info(
@@ -641,7 +669,6 @@ def render_tab_region(df_matrix_school, dfs):
                 ),
             )
 
-            # Mempertegas garis batas kabupaten/kota
             fig_kab_map.update_traces(
                 marker_line_color="#ffffff", marker_line_width=1.5
             )

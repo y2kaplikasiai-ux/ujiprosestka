@@ -33,11 +33,10 @@ def render_tab_school(df_matrix_school, dfs=None, irt_results=None):
         df_master = df_db.copy()
         is_from_mysql = True
     elif df_matrix_school is not None and not df_matrix_school.empty:
-        # OPTIMASI MEMORI: Hanya ambil kolom esensial/metadata dan skor untuk menghindari ArrayMemoryError
         essential_cols = [
             c for c in df_matrix_school.columns 
             if c in [
-                "username", "user_id", "id_peserta", "nama", "nama_sekolah", "_school_key", 
+                "username", "user_id", "id_peserta", "nama", "nama_sekolah", "kode_sekolah", "_school_key", 
                 "nama_kabupaten", "nama_provinsi", "kd_prop", "kode_provinsi", "skor_mentah", 
                 "Jumlah_Soal", "skor_konversi_ctt", "skor_konversi_rasch", 
                 "skor_konversi_1pl", "skor_konversi_2pl", "skor_konversi_3pl"
@@ -55,21 +54,36 @@ def render_tab_school(df_matrix_school, dfs=None, irt_results=None):
         )
         return
 
+    # Normalisasi penamaan kolom penting agar seragam
+    if "kode_sekolah" not in df_master.columns and "_school_key" in df_master.columns:
+        df_master["kode_sekolah"] = df_master["_school_key"]
+    elif "kode_sekolah" in df_master.columns and "_school_key" not in df_master.columns:
+        df_master["_school_key"] = df_master["kode_sekolah"]
+
+    if "kode_provinsi" not in df_master.columns and "kd_prop" in df_master.columns:
+        df_master["kode_provinsi"] = df_master["kd_prop"]
+
+    df_master["kode_sekolah"] = df_master["kode_sekolah"].fillna("-").astype(str).str.strip()
+    df_master["nama_sekolah"] = df_master.get("nama_sekolah", df_master["kode_sekolah"]).fillna("Sekolah Tanpa Nama").astype(str).str.strip()
+    df_master["nama_kabupaten"] = df_master.get("nama_kabupaten", "-").fillna("-").astype(str).str.strip()
+    df_master["nama_provinsi"] = df_master.get("nama_provinsi", "-").fillna("-").astype(str).str.strip()
+    df_master["kode_provinsi"] = df_master.get("kode_provinsi", "-").fillna("-").astype(str).str.strip()
+
     # --- 2. DETEKSI METODE NILAI KONVERSI ---
     available_methods = {}
 
     if is_from_mysql:
-        # Kolom dari Database MySQL
         if "skor_konversi_ctt" in df_master.columns and df_master["skor_konversi_ctt"].notna().any():
             available_methods["Nilai Konversi (Klasik/CTT)"] = "skor_konversi_ctt"
         if "skor_konversi_rasch" in df_master.columns and df_master["skor_konversi_rasch"].notna().any():
             available_methods["Nilai Konversi (IRT - Rasch/1PL)"] = "skor_konversi_rasch"
+        if "skor_konversi_1pl" in df_master.columns and df_master["skor_konversi_1pl"].notna().any() and "Nilai Konversi (IRT - Rasch/1PL)" not in available_methods:
+            available_methods["Nilai Konversi (IRT - Rasch/1PL)"] = "skor_konversi_1pl"
         if "skor_konversi_2pl" in df_master.columns and df_master["skor_konversi_2pl"].notna().any():
             available_methods["Nilai Konversi (IRT - 2PL)"] = "skor_konversi_2pl"
         if "skor_konversi_3pl" in df_master.columns and df_master["skor_konversi_3pl"].notna().any():
             available_methods["Nilai Konversi (IRT - 3PL)"] = "skor_konversi_3pl"
     else:
-        # Fallback dari Dataframe Memori
         if "Nilai_Konversi" in df_master.columns:
             available_methods["Nilai Konversi (Klasik/CTT)"] = "Nilai_Konversi"
         elif "skor_mentah" in df_master.columns:
@@ -87,9 +101,12 @@ def render_tab_school(df_matrix_school, dfs=None, irt_results=None):
         if irt_results and isinstance(irt_results, dict):
             for key_model, label_model, col_name in [
                 ("rasch", "Nilai Konversi (IRT - Rasch/1PL)", "Konversi_Rasch"),
+                ("1pl", "Nilai Konversi (IRT - Rasch/1PL)", "Konversi_Rasch"),
                 ("2pl", "Nilai Konversi (IRT - 2PL)", "Konversi_2PL"),
                 ("3pl", "Nilai Konversi (IRT - 3PL)", "Konversi_3PL"),
             ]:
+                if label_model in available_methods:
+                    continue
                 if key_model in irt_results and isinstance(irt_results[key_model], dict):
                     df_p = irt_results[key_model].get("df_person")
                     if df_p is not None and not df_p.empty:
@@ -97,6 +114,12 @@ def render_tab_school(df_matrix_school, dfs=None, irt_results=None):
                         if scores is not None and len(scores) == len(df_master):
                             df_master[col_name] = scores
                             available_methods[label_model] = col_name
+
+    if not available_methods:
+        if "skor_mentah" in df_master.columns:
+            available_methods["Skor Mentah (Klasik/CTT)"] = "skor_mentah"
+        elif "Nilai_Konversi" in df_master.columns:
+            available_methods["Nilai Konversi (Klasik/CTT)"] = "Nilai_Konversi"
 
     if not available_methods:
         st.error("❌ Tidak ditemukan kolom nilai konversi yang dapat dianalisis.")
@@ -116,7 +139,7 @@ def render_tab_school(df_matrix_school, dfs=None, irt_results=None):
 
     # --- 4. FILTER WILAYAH & JUMLAH PESERTA ---
     st.markdown("#### 🔍 Filter Wilayah & Jumlah Peserta")
-    col_f1, col_f2 = st.columns([3, 1])
+    col_f1, col_f2 = st.columns(2)
 
     prov_dict = {}
 
@@ -125,21 +148,15 @@ def render_tab_school(df_matrix_school, dfs=None, irt_results=None):
             return ""
         return str(val).strip().rstrip(",").strip()
 
-    # Ekstraksi Daftar Provinsi
-    if "kode_provinsi" in df_master.columns and "nama_provinsi" in df_master.columns:
-        df_prov_pairs = df_master[["kode_provinsi", "nama_provinsi"]].dropna().drop_duplicates()
-        for _, row in df_prov_pairs.iterrows():
-            kd_str = clean_str(row["kode_provinsi"]).replace(".0", "").zfill(2)
-            nm_str = clean_str(row["nama_provinsi"]).upper()
-            if kd_str and nm_str:
-                prov_dict[kd_str] = nm_str
-    elif "kd_prop" in df_master.columns and "nama_provinsi" in df_master.columns:
-        df_prov_pairs = df_master[["kd_prop", "nama_provinsi"]].dropna().drop_duplicates()
-        for _, row in df_prov_pairs.iterrows():
-            kd_str = clean_str(row["kd_prop"]).replace(".0", "").zfill(2)
-            nm_str = clean_str(row["nama_provinsi"]).upper()
-            if kd_str and nm_str:
-                prov_dict[kd_str] = nm_str
+    df_prov_pairs = df_master[["kode_provinsi", "nama_provinsi"]].dropna().drop_duplicates()
+    for _, row in df_prov_pairs.iterrows():
+        kd_raw = clean_str(row["kode_provinsi"])
+        if kd_raw == "-" or not kd_raw:
+            continue
+        kd_str = kd_raw.replace(".0", "").zfill(2)
+        nm_str = clean_str(row["nama_provinsi"]).upper()
+        if nm_str and nm_str != "-":
+            prov_dict[kd_str] = nm_str
 
     prov_options = [f"{k} - {v}" for k, v in sorted(prov_dict.items())]
 
@@ -164,13 +181,10 @@ def render_tab_school(df_matrix_school, dfs=None, irt_results=None):
 
     df_filtered_school = df_master.copy()
 
-    # Penerapan Filter Provinsi
     if selected_prov_options:
         selected_codes = [opt.split(" - ")[0].strip() for opt in selected_prov_options]
-        col_prov_kd = "kode_provinsi" if "kode_provinsi" in df_filtered_school.columns else "kd_prop"
-
         df_filtered_school["_kd_prop_clean"] = (
-            df_filtered_school[col_prov_kd]
+            df_filtered_school["kode_provinsi"]
             .astype(str)
             .str.strip()
             .str.replace(".0", "", regex=False)
@@ -185,41 +199,50 @@ def render_tab_school(df_matrix_school, dfs=None, irt_results=None):
         st.warning("⚠️ Tidak ada data sekolah yang memenuhi kriteria filter provinsi yang dipilih.")
         return
 
+    df_filtered_school[selected_metric_col] = pd.to_numeric(df_filtered_school[selected_metric_col], errors="coerce")
+
     # --- 5. AGREGASI DATA PER SEKOLAH ---
-    id_user_col = "id_peserta" if "id_peserta" in df_filtered_school.columns else df_filtered_school.columns[0]
-
+    id_user_col = "username" if "username" in df_filtered_school.columns else df_filtered_school.columns[0]
     col_sek_kd = "kode_sekolah" if "kode_sekolah" in df_filtered_school.columns else "_school_key"
+    
     group_cols = [col_sek_kd, "nama_sekolah"]
-
     if "nama_kabupaten" in df_filtered_school.columns:
         group_cols.append("nama_kabupaten")
     if "nama_provinsi" in df_filtered_school.columns:
         group_cols.append("nama_provinsi")
 
-    # Mengabaikan nilai NULL saat melakukan agregasi rata-rata
     df_valid_scores = df_filtered_school.dropna(subset=[selected_metric_col])
 
     if df_valid_scores.empty:
-        st.warning("⚠️ Tidak ada data nilai yang valid untuk metode yang dipilih.")
-        return
-
-    df_school_summary = (
-        df_valid_scores.groupby(group_cols, as_index=False)
-        .agg(
-            Jumlah_Peserta=(id_user_col, "count"),
-            Rata_Rata=(selected_metric_col, "mean"),
-            Nilai_Min=(selected_metric_col, "min"),
-            Nilai_Max=(selected_metric_col, "max"),
-            Std_Deviasi=(selected_metric_col, "std"),
+        df_school_summary = (
+            df_filtered_school.groupby(group_cols, as_index=False)
+            .agg(
+                Jumlah_Peserta=(id_user_col, "count"),
+                Rata_Rata=(selected_metric_col, lambda x: 0.0),
+                Nilai_Min=(selected_metric_col, lambda x: 0.0),
+                Nilai_Max=(selected_metric_col, lambda x: 0.0),
+                Std_Deviasi=(selected_metric_col, lambda x: 0.0),
+            )
         )
-    )
+    else:
+        df_school_summary = (
+            df_valid_scores.groupby(group_cols, as_index=False)
+            .agg(
+                Jumlah_Peserta=(id_user_col, "count"),
+                Rata_Rata=(selected_metric_col, "mean"),
+                Nilai_Min=(selected_metric_col, "min"),
+                Nilai_Max=(selected_metric_col, "max"),
+                Std_Deviasi=(selected_metric_col, "std"),
+            )
+        )
 
+    df_school_summary["Jumlah_Peserta"] = pd.to_numeric(df_school_summary["Jumlah_Peserta"], errors="coerce").fillna(0).astype(int)
     df_school_summary = df_school_summary[
         df_school_summary["Jumlah_Peserta"] >= min_peserta
     ].copy()
 
     if df_school_summary.empty:
-        st.warning(f"⚠️ Tidak ada sekolah yang memiliki jumlah peserta minimal {min_peserta}.")
+        st.warning(f"⚠️ Tidak ada sekolah yang memiliki jumlah peserta minimal {min_peserta}. Coba turunkan nilai filter minimal peserta.")
         return
 
     rename_dict = {
