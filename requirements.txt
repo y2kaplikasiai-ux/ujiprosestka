@@ -1,0 +1,27 @@
+# --- Framework Aplikasi & UI ---
+streamlit>=1.30.0
+
+# --- Pengolahan & Komputasi Data ---
+pandas>=2.0.0
+numpy>=1.24.0
+scipy>=1.10.0
+scikit-learn>=1.3.0
+
+# --- Big Data Processing (Hemat RAM) ---
+polars>=0.20.0
+pyarrow>=14.0.0
+
+# --- Percepatan Komputasi (Numba Engine) ---
+numba>=0.58.0
+
+# --- Visualisasi Data & Plotting ---
+plotly>=5.18.0
+matplotlib>=3.8.0
+
+# --- Format File Input/Output (Excel & Parquet) ---
+openpyxl>=3.1.0
+xlsxwriter>=3.1.0
+
+# --- Database Integration (MySQL) ---
+SQLAlchemy>=2.0.0
+pymysql>=1.1.0
