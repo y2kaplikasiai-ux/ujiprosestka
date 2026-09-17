@@ -141,93 +141,42 @@ def _load_geojson_kabupaten():
 
 
 def _get_region_df(df_matrix_school, dfs):
-    """Mengekstrak dan mencocokkan DataFrame Peserta dengan data Wilayah."""
-    if df_matrix_school is not None and not df_matrix_school.empty:
-        df_res = df_matrix_school.copy()
-    elif isinstance(dfs, dict) and "respon" in dfs and dfs["respon"] is not None:
-        df_res = dfs["respon"].copy()
-    else:
-        try:
-            engine = get_db_connection()
-            if engine:
-                df_res = pd.read_sql("SELECT * FROM tb_peserta_skor", engine)
-        except Exception:
-            df_res = pd.DataFrame()
-
-    if df_res.empty:
+    """Mengekstrak dan mencocokkan DataFrame Peserta dengan data Wilayah (sinkron ke df_matrix / N=276.030)."""
+    df_base = st.session_state.get("df_matrix")
+    if df_base is None or df_base.empty:
+        df_base = df_matrix_school
+    if (df_base is None or df_base.empty) and isinstance(dfs, dict) and "respon" in dfs:
+        df_base = dfs["respon"]
+        
+    if df_base is None or df_base.empty:
         return pd.DataFrame()
 
-    col_user = next(
-        (
-            c
-            for c in df_res.columns
-            if str(c).lower().strip()
-            in ["username", "user_id", "id_peserta", "id"]
-        ),
-        df_res.columns[0],
-    )
-
-    col_prov = next(
-        (
-            c
-            for c in df_res.columns
-            if str(c).lower().strip()
-            in ["nama_provinsi", "provinsi", "prov", "nama_propinsi", "propinsi"]
-        ),
-        None,
-    )
-    if not col_prov:
-        col_prov = next(
-            (
-                c
-                for c in df_res.columns
-                if str(c).lower().strip()
-                in ["kd_prop", "kode_provinsi", "kd_provinsi", "id_provinsi"]
-            ),
-            None,
-        )
-
-    col_kab = next(
-        (
-            c
-            for c in df_res.columns
-            if str(c).lower().strip()
-            in [
-                "nama_kabupaten",
-                "kabupaten",
-                "kota",
-                "nama_kota",
-                "kab_kota",
-                "nama_kab_kota",
-            ]
-        ),
-        None,
-    )
-
-    df_res["username_clean"] = (
-        df_res[col_user].astype(str).str.strip().str.lower()
-    )
-
-    if col_prov:
-        prov_series = (
-            df_res[col_prov]
-            .fillna("TIDAK TERDEFINISI")
-            .astype(str)
-            .str.strip()
-            .str.upper()
-        )
-        mapped_prov = prov_series.map(
-            lambda val: KODE_PROVINSI_MAP.get(val, val)
-        )
-        df_res["nama_provinsi"] = mapped_prov.apply(_clean_province_name)
-    else:
-        df_res["nama_provinsi"] = "TIDAK TERDEFINISI"
-
-    if col_kab:
-        df_res["nama_kabupaten"] = df_res[col_kab].apply(_clean_kabupaten_name)
-    else:
-        df_res["nama_kabupaten"] = "TIDAK TERDEFINISI"
-
+    df_res = df_base.copy()
+    col_user = next((c for c in df_res.columns if str(c).lower().strip() in ["username", "user_id", "id_peserta", "id"]), df_res.columns[0])
+    df_res["username_clean"] = df_res[col_user].astype(str).str.strip().str.lower()
+    df_res = df_res[df_res["username_clean"] != "nan"].drop_duplicates("username_clean").copy()
+    
+    # Ambil metadata wilayah dari DB sebagai referensi left-join (tanpa mengubah N master)
+    try:
+        engine = get_db_connection()
+        if engine:
+            df_meta = pd.read_sql("SELECT username, nama_provinsi, nama_kabupaten FROM tb_peserta_skor WHERE username IS NOT NULL AND username != ''", engine)
+            if not df_meta.empty:
+                df_meta["username_clean"] = df_meta["username"].astype(str).str.strip().str.lower()
+                df_meta["nama_provinsi"] = df_meta["nama_provinsi"].fillna("TIDAK TERDEFINISI").apply(_clean_province_name)
+                df_meta["nama_kabupaten"] = df_meta["nama_kabupaten"].fillna("TIDAK TERDEFINISI").apply(_clean_kabupaten_name)
+                df_res = df_res.merge(df_meta[["username_clean", "nama_provinsi", "nama_kabupaten"]].drop_duplicates("username_clean"), on="username_clean", how="left")
+                df_res["nama_provinsi"] = df_res["nama_provinsi"].fillna("TIDAK TERDEFINISI")
+                df_res["nama_kabupaten"] = df_res["nama_kabupaten"].fillna("TIDAK TERDEFINISI")
+                return df_res
+    except Exception:
+        pass
+    
+    col_prov = next((c for c in df_res.columns if str(c).lower().strip() in ["nama_provinsi", "provinsi", "prov", "kd_prop", "kode_provinsi"]), None)
+    col_kab = next((c for c in df_res.columns if str(c).lower().strip() in ["nama_kabupaten", "kabupaten", "kota", "nama_kota"]), None)
+    
+    df_res["nama_provinsi"] = df_res[col_prov].apply(lambda x: _clean_province_name(KODE_PROVINSI_MAP.get(str(x).strip().upper(), str(x)))) if col_prov else "TIDAK TERDEFINISI"
+    df_res["nama_kabupaten"] = df_res[col_kab].apply(_clean_kabupaten_name) if col_kab else "TIDAK TERDEFINISI"
     return df_res
 
 
