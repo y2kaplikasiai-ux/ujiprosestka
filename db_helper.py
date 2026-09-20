@@ -4,10 +4,10 @@ import urllib.parse
 import pandas as pd
 from sqlalchemy import create_engine, text
 
-# Konfigurasi Koneksi MySQL
-MYSQL_HOST = os.getenv("MYSQL_HOST", "localhost")
+# Konfigurasi Koneksi MySQL (Menggunakan 'db' sebagai default untuk Docker Compose)
+MYSQL_HOST = os.getenv("MYSQL_HOST", "db")
 MYSQL_USER = os.getenv("MYSQL_USER", "root")
-MYSQL_PASSWORD = os.getenv("MYSQL_PASSWORD", "")
+MYSQL_PASSWORD = os.getenv("MYSQL_PASSWORD", "password_rahasia_anda")
 MYSQL_DATABASE = os.getenv("MYSQL_DATABASE", "db_psikometri")
 MYSQL_PORT = os.getenv("MYSQL_PORT", "3306")
 
