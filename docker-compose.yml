@@ -12,7 +12,7 @@ services:
       - mysql_data:/var/lib/mysql
 
   app:
-    image: ghcr.io/y2kapliasiai-ux/ujiprosestka:latest
+    image: y2kapliasiai/ujiprosestka:latest
     container_name: streamlit_tka_app
     restart: always
     ports:
