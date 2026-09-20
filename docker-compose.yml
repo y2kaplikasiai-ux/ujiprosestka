@@ -14,16 +14,16 @@ services:
       - mysql_data:/var/lib/mysql
 
   app:
-    build: .
+    image: ghcr.io/y2kapliasiai-ux/ujiprosestka:latest
     container_name: streamlit_tka_app
     restart: always
     ports:
       - "8501:8501"
     environment:
-      - DB_HOST=db
-      - DB_USER=root
-      - DB_PASSWORD=password_rahasia_anda
-      - DB_NAME=db_psikometri
+      - MYSQL_HOST=db
+      - MYSQL_USER=root
+      - MYSQL_PASSWORD=password_rahasia_anda
+      - MYSQL_DATABASE=db_psikometri
     depends_on:
       - db
 
