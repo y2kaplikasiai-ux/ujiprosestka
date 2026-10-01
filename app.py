@@ -31,7 +31,7 @@ from views.tab_validation import render_tab_validation
 
 # 1. Konfigurasi Halaman Streamlit
 st.set_page_config(
-    page_title="Dashboard Analisis Psikometri TKA-300926",
+    page_title="Dashboard Analisis Psikometri TKA-011026",
     page_icon="📊",
     layout="wide",
     initial_sidebar_state="expanded",
