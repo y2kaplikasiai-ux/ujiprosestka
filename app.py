@@ -1,5 +1,6 @@
 # app.py
 import io
+import os
 import time
 import zipfile
 
@@ -9,7 +10,12 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 import ctt_analysis
-from db_helper import get_db_connection, prepare_and_save_analysis
+from db_helper import (
+    get_db_connection,
+    prepare_and_save_analysis,
+    check_db_status,
+    get_active_config,
+)
 from irt_analysis import run_irt_analysis
 from scoring import extract_active_soal_from_respon, process_scoring
 from styles import load_custom_css
@@ -25,7 +31,7 @@ from views.tab_validation import render_tab_validation
 
 # 1. Konfigurasi Halaman Streamlit
 st.set_page_config(
-    page_title="Dashboard Analisis Psikometri TKA",
+    page_title="Dashboard Analisis Psikometri TKA-300926",
     page_icon="📊",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -139,7 +145,7 @@ def format_duration(seconds):
 
 # 3. Header Utama Aplikasi
 st.markdown(
-    '<div class="main-header">📊 Dashboard Pengolahan & Analisis Psikometri TKA</div>',
+    '<div class="main-header">📊 Dashboard Pengolahan & Analisis Psikometri TKA (v.1)</div>',
     unsafe_allow_html=True,
 )
 st.markdown(
@@ -156,22 +162,86 @@ if "irt_results" not in st.session_state:
     st.session_state["irt_results"] = {}
 
 
-# --- AUTO-LOAD DARI DATABASE MYSQL SAAT REFRESH ---
+# --- SISTEM PENYIMPANAN CADANGAN LOKAL (PARQUET FALLBACK) ---
+CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data_cache")
+
+
+def save_local_cache(df_peserta=None, df_soal=None, df_summary=None, df_sekolah=None):
+    """Menyimpan data hasil analisis ke disk lokal dalam format Parquet sebagai cadangan."""
+    try:
+        os.makedirs(CACHE_DIR, exist_ok=True)
+        if df_peserta is not None and not df_peserta.empty:
+            df_peserta.to_parquet(os.path.join(CACHE_DIR, "tb_peserta_skor.parquet"), index=False)
+        if df_soal is not None and not df_soal.empty:
+            df_soal.to_parquet(os.path.join(CACHE_DIR, "tb_soal_parameter.parquet"), index=False)
+        if df_summary is not None and not df_summary.empty:
+            df_summary.to_parquet(os.path.join(CACHE_DIR, "tb_model_summary.parquet"), index=False)
+        if df_sekolah is not None and not df_sekolah.empty:
+            df_sekolah.to_parquet(os.path.join(CACHE_DIR, "tb_sekolah_agregasi.parquet"), index=False)
+        return True
+    except Exception as e:
+        print(f"Gagal simpan local cache: {e}")
+        return False
+
+
+def load_from_local_cache():
+    """Membaca hasil analisis dari disk lokal jika database belum terhubung."""
+    try:
+        p_peserta = os.path.join(CACHE_DIR, "tb_peserta_skor.parquet")
+        p_soal = os.path.join(CACHE_DIR, "tb_soal_parameter.parquet")
+        p_summary = os.path.join(CACHE_DIR, "tb_model_summary.parquet")
+        p_sekolah = os.path.join(CACHE_DIR, "tb_sekolah_agregasi.parquet")
+
+        if not os.path.exists(p_summary) or not os.path.exists(p_peserta):
+            return None
+
+        df_summary = pd.read_parquet(p_summary)
+        df_peserta = pd.read_parquet(p_peserta)
+        df_soal = pd.read_parquet(p_soal) if os.path.exists(p_soal) else pd.DataFrame()
+        df_sekolah = pd.read_parquet(p_sekolah) if os.path.exists(p_sekolah) else pd.DataFrame()
+        return df_summary, df_peserta, df_soal, df_sekolah
+    except Exception:
+        return None
+
+
+# --- AUTO-LOAD DARI DATABASE MYSQL / LOCAL CACHE SAAT REFRESH ---
 def load_data_from_db():
-    """Membaca hasil analisis terakhir dari MySQL jika session_state kosong."""
+    """Membaca hasil analisis terakhir dari MySQL (atau local cache) jika session_state kosong."""
+    df_summary = None
+    df_peserta = None
+    df_soal = None
+    df_sekolah = None
+    loaded_source = None
+
+    # 1. Coba baca dari MySQL Server
     try:
         engine = get_db_connection()
-        if engine is None:
-            return False
+        if engine is not None:
+            df_sum_test = pd.read_sql("SELECT * FROM tb_model_summary", engine)
+            if not df_sum_test.empty:
+                df_summary = df_sum_test
+                df_peserta = pd.read_sql("SELECT * FROM tb_peserta_skor", engine)
+                df_soal = pd.read_sql("SELECT * FROM tb_soal_parameter", engine)
+                try:
+                    df_sekolah = pd.read_sql("SELECT * FROM tb_sekolah_agregasi", engine)
+                except Exception:
+                    df_sekolah = pd.DataFrame()
+                loaded_source = "MySQL Server"
+    except Exception:
+        pass
 
-        df_summary = pd.read_sql("SELECT * FROM tb_model_summary", engine)
-        if df_summary.empty:
-            return False
+    # 2. Fallback: Coba baca dari Local Parquet Cache jika MySQL belum tersedia
+    if df_summary is None or df_summary.empty or df_peserta is None or df_peserta.empty:
+        cached = load_from_local_cache()
+        if cached is not None:
+            df_summary, df_peserta, df_soal, df_sekolah = cached
+            loaded_source = "Penyimpanan Lokal (Cache Disk)"
 
-        df_peserta = pd.read_sql("SELECT * FROM tb_peserta_skor", engine)
-        df_soal = pd.read_sql("SELECT * FROM tb_soal_parameter", engine)
+    if df_summary is None or df_summary.empty or df_peserta is None or df_peserta.empty:
+        return False
 
-        # Konversi kolom numerik
+    try:
+        # Konversi kolom numerik soal
         for num_col in [
             "tingkat_kesukaran_ctt",
             "daya_beda_ctt",
@@ -183,8 +253,19 @@ def load_data_from_db():
             "b_3pl",
             "c_3pl",
         ]:
-            if num_col in df_soal.columns:
+            if df_soal is not None and num_col in df_soal.columns:
                 df_soal[num_col] = pd.to_numeric(df_soal[num_col], errors="coerce")
+
+        # Normalisasi kolom soal untuk tampilan CTT
+        if df_soal is not None and not df_soal.empty:
+            if "kode_soal" in df_soal.columns and "Kode_Soal" not in df_soal.columns:
+                df_soal["Kode_Soal"] = df_soal["kode_soal"]
+            if "tingkat_kesukaran_ctt" in df_soal.columns and "Tingkat_Kesukaran_p" not in df_soal.columns:
+                df_soal["Tingkat_Kesukaran_p"] = df_soal["tingkat_kesukaran_ctt"]
+            if "daya_beda_ctt" in df_soal.columns and "Daya_Beda_r" not in df_soal.columns:
+                df_soal["Daya_Beda_r"] = df_soal["daya_beda_ctt"]
+            if "rekomendasi" in df_soal.columns and "Rekomendasi" not in df_soal.columns:
+                df_soal["Rekomendasi"] = df_soal["rekomendasi"]
 
         if "skor_mentah" not in df_peserta.columns:
             if "skor_konversi_ctt" in df_peserta.columns:
@@ -193,7 +274,7 @@ def load_data_from_db():
                 )
 
         if "Jumlah_Soal" not in df_peserta.columns:
-            df_peserta["Jumlah_Soal"] = len(df_soal) if not df_soal.empty else 0
+            df_peserta["Jumlah_Soal"] = len(df_soal) if df_soal is not None and not df_soal.empty else 0
 
         ctt_summary = df_summary[df_summary["metode_model"].str.upper() == "CTT"]
         ctt_rel = (
@@ -204,7 +285,9 @@ def load_data_from_db():
         )
 
         st.session_state["df_matrix"] = df_peserta
-        st.session_state["df_matrix_school"] = df_peserta
+        st.session_state["df_matrix_school"] = (
+            df_sekolah if df_sekolah is not None and not df_sekolah.empty else df_peserta
+        )
         st.session_state["val_result"] = {
             "status": True,
             "dataframes": {
@@ -217,6 +300,11 @@ def load_data_from_db():
             "person_stats": df_peserta,
             "reliability": ctt_rel,
             "cronbach_alpha": ctt_rel,
+            "summary": {
+                "cronbach_alpha": ctt_rel,
+                "n_peserta": len(df_peserta),
+                "n_soal": len(df_soal) if df_soal is not None else 0,
+            },
         }
 
         irt_dict = {}
@@ -241,16 +329,34 @@ def load_data_from_db():
                 )
                 df_person_m["Theta"] = df_person_m["Nilai_Scaled"]
 
+            # Salin parameter butir spesifik model
+            df_soal_m = df_soal.copy() if df_soal is not None else pd.DataFrame()
+            if not df_soal_m.empty:
+                df_soal_m["Item"] = df_soal_m.get("kode_soal", df_soal_m.columns[0])
+                if f"b_{m}" in df_soal_m.columns:
+                    df_soal_m["b"] = df_soal_m[f"b_{m}"]
+                if f"a_{m}" in df_soal_m.columns:
+                    df_soal_m["a"] = df_soal_m[f"a_{m}"]
+                if f"c_{m}" in df_soal_m.columns:
+                    df_soal_m["c"] = df_soal_m[f"c_{m}"]
+
             irt_dict[m] = {
                 "df_person": df_person_m,
-                "item_params": df_soal,
+                "item_params": df_soal_m,
                 "fit_stats": fit_stat,
             }
 
         st.session_state["irt_results"] = irt_dict
         st.session_state["data_processed"] = True
+        st.session_state["loaded_source"] = loaded_source
+
+        # Set config key agar tidak memicu reset cache tab_irt
+        min_s = float(st.session_state.get("cfg_min_scale", 200.0))
+        max_s = float(st.session_state.get("cfg_max_scale", 800.0))
+        st.session_state["last_irt_scale_key"] = f"{min_s}_{max_s}"
         return True
-    except Exception:
+    except Exception as e:
+        print(f"Error memproses load_data_from_db: {e}")
         return False
 
 
@@ -266,8 +372,33 @@ st.sidebar.markdown(
     unsafe_allow_html=True,
 )
 
+# Indikator status koneksi Database MySQL
+db_ok, db_msg = check_db_status()
+if db_ok:
+    st.sidebar.success(f"🟢 **Database:** {db_msg}")
+else:
+    st.sidebar.warning(f"🟡 **Database:** {db_msg}")
+    with st.sidebar.expander("⚙️ Konfigurasi Koneksi MySQL", expanded=False):
+        st.caption("Jika MySQL berada di host/port atau password berbeda:")
+        curr_cfg = get_active_config()
+        c_host = st.text_input("Host MySQL", value=curr_cfg["host"], key="cfg_in_host")
+        c_port = st.number_input("Port", value=int(curr_cfg["port"]), key="cfg_in_port")
+        c_user = st.text_input("User", value=curr_cfg["user"], key="cfg_in_user")
+        c_pass = st.text_input("Password", value=curr_cfg["password"], type="password", key="cfg_in_pass")
+        c_name = st.text_input("Database", value=curr_cfg["database"], key="cfg_in_name")
+        if st.button("🔌 Simpan & Sambungkan", key="btn_apply_db_cfg", use_container_width=True):
+            st.session_state["custom_db_host"] = c_host
+            st.session_state["custom_db_port"] = c_port
+            st.session_state["custom_db_user"] = c_user
+            st.session_state["custom_db_pass"] = c_pass
+            st.session_state["custom_db_name"] = c_name
+            st.cache_data.clear()
+            get_db_connection(force_reconnect=True)
+            st.rerun()
+
 if st.session_state.get("data_processed", False):
-    st.sidebar.success("✅ Data tersimpan dimuat dari Database MySQL.")
+    source_label = st.session_state.get("loaded_source", "Database MySQL")
+    st.sidebar.success(f"✅ Data aktif dimuat dari: **{source_label}**")
 
 st.sidebar.markdown(
     '<div class="info-header-box"><b>Format:</b> ZIP, CSV, XLSX, XLS &nbsp;|&nbsp; Boleh huruf KAPITAL maupun kecil</div>',
@@ -1149,22 +1280,30 @@ if btn_process:
                             .reset_index()
                         )
 
-                    # Eksekusi Penyimpanan ke Database MySQL
+                    # Eksekusi Penyimpanan ke Database MySQL & Cache Lokal
                     saved_ok, msg_db = prepare_and_save_analysis(
                         df_peserta=df_peserta_save,
                         df_soal=df_soal_save,
                         df_summary=df_summary_save,
                         df_sekolah=df_sekolah_save,
                     )
+
+                    # Selalu simpan juga ke cache lokal Parquet untuk jaminan ketersediaan data saat refresh
+                    save_local_cache(
+                        df_peserta=df_peserta_save,
+                        df_soal=df_soal_save,
+                        df_summary=df_summary_save,
+                        df_sekolah=df_sekolah_save,
+                    )
+
                     if not saved_ok:
-                        st.warning(f"Catatan DB: {msg_db}")
+                        st.session_state["db_save_status"] = f"⚠️ {msg_db} (Data tersimpan di cadangan lokal)"
                     else:
+                        st.session_state["db_save_status"] = "✅ Berhasil tersimpan ke MySQL Server & Cadangan Lokal"
                         st.cache_data.clear()
 
                 except Exception as ex_mysql:
-                    st.warning(
-                        f"Catatan: Penyimpanan ke MySQL mengalami kendala: {ex_mysql}"
-                    )
+                    st.session_state["db_save_status"] = f"⚠️ Kendala DB: {ex_mysql} (Data tersimpan di cadangan lokal)"
 
                 t5_dur = time.time() - t5_start
                 update_step(4, "complete", t5_dur)

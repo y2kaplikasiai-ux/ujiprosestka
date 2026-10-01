@@ -6,8 +6,6 @@ services:
     environment:
       MYSQL_ROOT_PASSWORD: password_rahasia_anda
       MYSQL_DATABASE: db_psikometri
-    ports:
-      - "3306:3306"
     volumes:
       - mysql_data:/var/lib/mysql
 

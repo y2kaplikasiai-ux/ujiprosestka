@@ -4,6 +4,7 @@ import pandas as pd
 import pymysql
 from sqlalchemy import create_engine, text
 
+# Konfigurasi Server MySQL Lokal
 DB_HOST = "localhost"
 DB_USER = "root"
 DB_PASS = ""
@@ -14,6 +15,9 @@ DB_URL = f"mysql+pymysql://{DB_USER}:{DB_PASS}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 
 
 def reset_and_create_tables():
+    """
+    Menghapus tabel lama jika ada (DROP), lalu membuat tabel baru dengan Primary Key `username`.
+    """
     conn = pymysql.connect(host=DB_HOST, user=DB_USER, password=DB_PASS, port=DB_PORT)
     try:
         with conn.cursor() as cursor:
@@ -54,6 +58,9 @@ def reset_and_create_tables():
 
 
 def scale_theta_custom(theta_series, min_target=200.0, max_target=800.0, mean_target=500.0, sd_target=100.0):
+    """
+    Mengonversi nilai Theta IRT ke skala kustom (Default UTBK: Mean=500, SD=100, Range 200-800).
+    """
     if theta_series is None or theta_series.empty:
         return pd.Series(dtype=float)
 
@@ -63,6 +70,10 @@ def scale_theta_custom(theta_series, min_target=200.0, max_target=800.0, mean_ta
 
 
 def pipeline_proses_dan_simpan_mysql(df_matrix_school, irt_dict, scale_params=None):
+    """
+    Menggabungkan seluruh hasil kalkulasi (CTT & IRT) untuk SEMUA peserta,
+    mereset tabel di database, dan menyimpan data terstruktur menggunakan `username`.
+    """
     if df_matrix_school is None or df_matrix_school.empty:
         return
 
@@ -71,6 +82,7 @@ def pipeline_proses_dan_simpan_mysql(df_matrix_school, irt_dict, scale_params=No
 
     engine = reset_and_create_tables()
 
+    # Deteksi Kolom Username
     usr_col = df_matrix_school.columns[0]
     for c in ["username", "Username", "user_id", "ID", "nisn", "no_peserta"]:
         if c in df_matrix_school.columns:
@@ -80,6 +92,7 @@ def pipeline_proses_dan_simpan_mysql(df_matrix_school, irt_dict, scale_params=No
     df_final = pd.DataFrame()
     df_final["username"] = df_matrix_school[usr_col].astype(str).str.strip()
 
+    # Ekstraksi atribut sekolah & wilayah
     df_final["kode_sekolah"] = (
         df_matrix_school["_school_key"]
         if "_school_key" in df_matrix_school.columns
@@ -114,6 +127,7 @@ def pipeline_proses_dan_simpan_mysql(df_matrix_school, irt_dict, scale_params=No
         else df_final["kode_provinsi"]
     )
 
+    # 1. Skor Mentah & Jumlah Soal
     df_final["skor_mentah"] = (
         pd.to_numeric(df_matrix_school["skor_mentah"], errors="coerce").fillna(0)
         if "skor_mentah" in df_matrix_school.columns
@@ -125,12 +139,14 @@ def pipeline_proses_dan_simpan_mysql(df_matrix_school, irt_dict, scale_params=No
         else 1
     )
 
+    # 2. Skor CTT KLASIK
     df_final["skor_konversi_ctt"] = np.where(
         df_final["Jumlah_Soal"] > 0,
         (df_final["skor_mentah"] / df_final["Jumlah_Soal"]) * 100.0,
         0.0
     ).round(2)
 
+    # 3. Skor IRT SEMUA Peserta (Rasch, 1PL, 2PL, 3PL)
     min_val = scale_params.get("min", 200.0)
     max_val = scale_params.get("max", 800.0)
     mean_val = scale_params.get("mean", 500.0)
@@ -141,11 +157,13 @@ def pipeline_proses_dan_simpan_mysql(df_matrix_school, irt_dict, scale_params=No
         irt_data = irt_dict.get(model_key) if irt_dict else None
 
         if irt_data and isinstance(irt_data, dict):
+            # Ambil DataFrame Person dari key yang tersedia
             df_person = irt_data.get("person_params")
             if df_person is None or df_person.empty:
                 df_person = irt_data.get("df_person")
 
             if df_person is not None and not df_person.empty:
+                # Cari kolom ID yang tepat
                 u_col_irt = None
                 for candidate in ["username", "ID Peserta", "Username", "user_id", "ID"]:
                     if candidate in df_person.columns:
@@ -154,6 +172,7 @@ def pipeline_proses_dan_simpan_mysql(df_matrix_school, irt_dict, scale_params=No
                 if not u_col_irt:
                     u_col_irt = df_person.columns[0]
 
+                # Ambil atau Hitung Skor Scaled
                 score_series = None
                 if "Nilai_Scaled" in df_person.columns:
                     score_series = pd.to_numeric(df_person["Nilai_Scaled"], errors="coerce")
@@ -174,6 +193,7 @@ def pipeline_proses_dan_simpan_mysql(df_matrix_school, irt_dict, scale_params=No
                         )
 
                 if score_series is not None:
+                    # Mapping berdasarkan Username (dikast ke string & di-strip)
                     keys = df_person[u_col_irt].astype(str).str.strip().values
                     vals = score_series.values
                     map_score = dict(zip(keys, vals))
@@ -186,15 +206,16 @@ def pipeline_proses_dan_simpan_mysql(df_matrix_school, irt_dict, scale_params=No
         else:
             df_final[col_db_name] = np.nan
 
+    # Bersihkan duplikat Username
     df_final = df_final.drop_duplicates(subset=["username"]).copy()
 
-    # Menggunakan batch insertion (chunksize) agar penulisan ke MySQL aman dari memory spike
+    # Simpan ke tabel MySQL
     df_final.to_sql(
         name="tb_peserta_skor",
         con=engine,
         if_exists="append",
         index=False,
-        chunksize=5000,
+        chunksize=10000,
     )
 
 
@@ -210,7 +231,7 @@ def extract_active_soal_from_respon(df_respon):
     return list(active_soal)
 
 
-def process_scoring(df_respon, df_kunci, batch_size=50000):
+def process_scoring(df_respon, df_kunci):
     df_respon = df_respon.copy()
     df_kunci = df_kunci.copy()
 
@@ -245,7 +266,9 @@ def process_scoring(df_respon, df_kunci, batch_size=50000):
     if not soal_col_kunci:
         soal_col_kunci = df_kunci.columns[0]
     if not kunci_col_kunci:
-        kunci_col_kunci = df_kunci.columns[1] if len(df_kunci.columns) > 1 else df_kunci.columns[0]
+        kunci_col_kunci = (
+            df_kunci.columns[1] if len(df_kunci.columns) > 1 else df_kunci.columns[0]
+        )
 
     kunci_dict = dict(
         zip(
@@ -267,30 +290,27 @@ def process_scoring(df_respon, df_kunci, batch_size=50000):
         raw_list_soal = df_respon["list_soal"].values
         raw_respon = df_respon["respon"].values
 
-        # Proses secara iteratif per batch untuk menjaga kestabilan memori
-        for start_idx in range(0, n_rows, batch_size):
-            end_idx = min(start_idx + batch_size, n_rows)
-            for idx in range(start_idx, end_idx):
-                val_soal = raw_list_soal[idx]
-                val_resp = raw_respon[idx]
+        for idx in range(n_rows):
+            val_soal = raw_list_soal[idx]
+            val_resp = raw_respon[idx]
 
-                str_soal = "" if pd.isna(val_soal) else str(val_soal).strip()
-                str_resp = "" if pd.isna(val_resp) else str(val_resp).strip()
+            str_soal = "" if pd.isna(val_soal) else str(val_soal).strip()
+            str_resp = "" if pd.isna(val_resp) else str(val_resp).strip()
 
-                soal_list = [s.strip() for s in str_soal.split(",") if s.strip()]
-                respon_list = [r.strip().upper() for r in str_resp.split(",")]
+            soal_list = [s.strip() for s in str_soal.split(",") if s.strip()]
+            respon_list = [r.strip().upper() for r in str_resp.split(",")]
 
-                jumlah_soal_list[idx] = len(soal_list)
+            jumlah_soal_list[idx] = len(soal_list)
 
-                for pos, s_code in enumerate(soal_list):
-                    if s_code in item_to_idx:
-                        resp = respon_list[pos] if pos < len(respon_list) else ""
-                        kunci = kunci_dict.get(s_code)
+            for pos, s_code in enumerate(soal_list):
+                if s_code in item_to_idx:
+                    resp = respon_list[pos] if pos < len(respon_list) else ""
+                    kunci = kunci_dict.get(s_code)
 
-                        if kunci is not None:
-                            score_matrix[idx, item_to_idx[s_code]] = (
-                                1.0 if (resp != "" and resp == kunci) else 0.0
-                            )
+                    if kunci is not None:
+                        score_matrix[idx, item_to_idx[s_code]] = (
+                            1.0 if (resp != "" and resp == kunci) else 0.0
+                        )
 
         df_matrix = pd.DataFrame(score_matrix, columns=used_items)
         df_matrix.insert(0, "username", df_respon[id_col_respon].values)
@@ -300,7 +320,9 @@ def process_scoring(df_respon, df_kunci, batch_size=50000):
 
     elif "kode_soal" in df_respon.columns and "jawaban" in df_respon.columns:
         df_respon["kode_soal_clean"] = df_respon["kode_soal"].astype(str).str.strip()
-        df_respon["jawaban_clean"] = df_respon["jawaban"].astype(str).str.strip().str.upper()
+        df_respon["jawaban_clean"] = (
+            df_respon["jawaban"].astype(str).str.strip().str.upper()
+        )
         df_respon["kunci_true"] = df_respon["kode_soal_clean"].map(kunci_dict)
 
         df_respon["skor"] = np.where(
@@ -309,7 +331,9 @@ def process_scoring(df_respon, df_kunci, batch_size=50000):
             0.0,
         )
 
-        jml_soal_per_user = df_respon.groupby(id_col_respon)["kode_soal_clean"].nunique()
+        jml_soal_per_user = df_respon.groupby(id_col_respon)[
+            "kode_soal_clean"
+        ].nunique()
 
         df_matrix = (
             df_respon.pivot(
@@ -325,7 +349,9 @@ def process_scoring(df_respon, df_kunci, batch_size=50000):
             paket_map = df_respon.groupby(id_col_respon)[kode_paket_col].first()
             df_matrix.insert(1, "kode_paket", df_matrix["username"].map(paket_map))
 
-        df_matrix["Jumlah_Soal"] = df_matrix["username"].map(jml_soal_per_user).fillna(0).astype(int)
+        df_matrix["Jumlah_Soal"] = (
+            df_matrix["username"].map(jml_soal_per_user).fillna(0).astype(int)
+        )
 
     else:
         df_matrix = pd.DataFrame()
@@ -384,16 +410,40 @@ def calculate_person_fit(df_matrix, df_params, b_col="b"):
     usr_col = "username" if "username" in df_matrix.columns else df_matrix.columns[0]
 
     non_item_cols = [
-        "username", "user_id", "nama", "tahun", "kode_paket", "nama_sekolah",
-        "kode_sekolah", "nama_kabupaten", "nama_provinsi", "kode_provinsi",
-        "skor_mentah", "skormentah", "nilai_konversi", "Nilai_Konversi",
-        "skor_konversi_ctt", "skor_konversi_rasch", "skor_konversi_1pl",
-        "skor_konversi_2pl", "skor_konversi_3pl", "Jumlah_Soal", "jumlah_soal",
-        "_school_key", "_prop_key_user", "kd_prop"
+        "username",
+        "user_id",
+        "nama",
+        "tahun",
+        "kode_paket",
+        "nama_sekolah",
+        "kode_sekolah",
+        "nama_kabupaten",
+        "nama_provinsi",
+        "kode_provinsi",
+        "nama_sekolah_master",
+        "nama_kabupaten_master",
+        "kd_prop_master",
+        "nama_provinsi_master",
+        "skor_mentah",
+        "skormentah",
+        "nilai_konversi",
+        "Nilai_Konversi",
+        "skor_konversi_ctt",
+        "skor_konversi_rasch",
+        "skor_konversi_1pl",
+        "skor_konversi_2pl",
+        "skor_konversi_3pl",
+        "Jumlah_Soal",
+        "jumlah_soal",
+        "_school_key",
+        "_prop_key_user",
+        "kd_prop",
     ]
 
     item_cols = [
-        c for c in df_matrix.columns if c.lower() not in [x.lower() for x in non_item_cols]
+        c
+        for c in df_matrix.columns
+        if c.lower() not in [x.lower() for x in non_item_cols]
     ]
 
     if not item_cols:

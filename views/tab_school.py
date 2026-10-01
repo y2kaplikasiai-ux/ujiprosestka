@@ -17,6 +17,19 @@ def load_data_from_mysql():
             return None
         query = "SELECT * FROM tb_peserta_skor"
         df = pd.read_sql_query(query, con=engine)
+        
+        # Normalisasi otomatis nama kolom jika ada variasi penamaan di database
+        col_mappings = {
+            "sekolah": "nama_sekolah",
+            "nama_lembaga": "nama_sekolah",
+            "npsn": "kode_sekolah",
+            "kabupaten": "nama_kabupaten",
+            "provinsi": "nama_provinsi",
+        }
+        for old_col, new_col in col_mappings.items():
+            if old_col in df.columns and new_col not in df.columns:
+                df[new_col] = df[old_col]
+
         return df
     except Exception as e:
         st.warning(f"⚠️ Gagal terhubung ke MySQL Server: {e}. Menggunakan data lokal session state.")
@@ -36,8 +49,9 @@ def render_tab_school(df_matrix_school, dfs=None, irt_results=None):
         essential_cols = [
             c for c in df_matrix_school.columns 
             if c in [
-                "username", "user_id", "id_peserta", "nama", "nama_sekolah", "kode_sekolah", "_school_key", 
-                "nama_kabupaten", "nama_provinsi", "kd_prop", "kode_provinsi", "skor_mentah", 
+                "username", "user_id", "id_peserta", "nama", "nama_sekolah", "sekolah", "nama_lembaga", 
+                "kode_sekolah", "npsn", "_school_key", "nama_kabupaten", "kabupaten", 
+                "nama_provinsi", "provinsi", "kd_prop", "kode_provinsi", "skor_mentah", 
                 "Jumlah_Soal", "skor_konversi_ctt", "skor_konversi_rasch", 
                 "skor_konversi_1pl", "skor_konversi_2pl", "skor_konversi_3pl"
             ]
@@ -55,6 +69,18 @@ def render_tab_school(df_matrix_school, dfs=None, irt_results=None):
         return
 
     # Normalisasi penamaan kolom penting agar seragam
+    if "kode_sekolah" not in df_master.columns:
+        for alt_k in ["npsn", "_school_key", "NPSN", "kode_lembaga"]:
+            if alt_k in df_master.columns:
+                df_master["kode_sekolah"] = df_master[alt_k]
+                break
+
+    if "nama_sekolah" not in df_master.columns:
+        for alt_n in ["sekolah", "nama_lembaga", "Nama_Sekolah", "NAMA_SEKOLAH"]:
+            if alt_n in df_master.columns:
+                df_master["nama_sekolah"] = df_master[alt_n]
+                break
+
     if "kode_sekolah" not in df_master.columns and "_school_key" in df_master.columns:
         df_master["kode_sekolah"] = df_master["_school_key"]
     elif "kode_sekolah" in df_master.columns and "_school_key" not in df_master.columns:
@@ -63,11 +89,24 @@ def render_tab_school(df_matrix_school, dfs=None, irt_results=None):
     if "kode_provinsi" not in df_master.columns and "kd_prop" in df_master.columns:
         df_master["kode_provinsi"] = df_master["kd_prop"]
 
-    df_master["kode_sekolah"] = df_master["kode_sekolah"].fillna("-").astype(str).str.strip()
-    df_master["nama_sekolah"] = df_master.get("nama_sekolah", df_master["kode_sekolah"]).fillna("Sekolah Tanpa Nama").astype(str).str.strip()
-    df_master["nama_kabupaten"] = df_master.get("nama_kabupaten", "-").fillna("-").astype(str).str.strip()
-    df_master["nama_provinsi"] = df_master.get("nama_provinsi", "-").fillna("-").astype(str).str.strip()
-    df_master["kode_provinsi"] = df_master.get("kode_provinsi", "-").fillna("-").astype(str).str.strip()
+    df_master["kode_sekolah"] = df_master.get("kode_sekolah", df_master.get("_school_key", "-")).fillna("-").astype(str).str.strip()
+    
+    # Pencarian berlapis untuk menghindari 'Sekolah Tanpa Nama'
+    raw_nama_sekolah = None
+    for col_candidate in ["nama_sekolah", "sekolah", "nama_lembaga", "Nama_Sekolah"]:
+        if col_candidate in df_master.columns:
+            raw_nama_sekolah = df_master[col_candidate]
+            break
+            
+    if raw_nama_sekolah is not None:
+        df_master["nama_sekolah"] = raw_nama_sekolah.fillna(df_master["kode_sekolah"]).astype(str).str.strip()
+        df_master.loc[df_master["nama_sekolah"].isin(["", "nan", "None", "NONE"]), "nama_sekolah"] = df_master["kode_sekolah"]
+    else:
+        df_master["nama_sekolah"] = df_master["kode_sekolah"]
+
+    df_master["nama_kabupaten"] = df_master.get("nama_kabupaten", df_master.get("kabupaten", "-")).fillna("-").astype(str).str.strip()
+    df_master["nama_provinsi"] = df_master.get("nama_provinsi", df_master.get("provinsi", "-")).fillna("-").astype(str).str.strip()
+    df_master["kode_provinsi"] = df_master.get("kode_provinsi", df_master.get("kd_prop", "-")).fillna("-").astype(str).str.strip()
 
     # --- 2. DETEKSI METODE NILAI KONVERSI ---
     available_methods = {}

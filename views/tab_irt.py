@@ -8,7 +8,7 @@ from equating import perform_multi_session_equating, run_cached_session_irt
 from excel_exporter import convert_df_to_csv_bytes, create_excel_report
 from irt_analysis import run_irt_analysis
 from scoring import calculate_person_fit
-from db_helper import prepare_and_save_analysis
+from db_helper import prepare_and_save_analysis, update_irt_model_in_db
 from ui_components import render_irt_icc, render_irt_tif, render_wright_map
 
 
@@ -50,10 +50,16 @@ def _scale_theta_scores(df_persons, scale_min=200, scale_max=800):
     return df_res
 
 
-def _get_b_col(df_params):
+def _get_b_col(df_params, model_type=None):
     """Helper untuk mendeteksi kolom kesukaran (b) dengan presisi tinggi."""
     if df_params is None or df_params.empty:
         return None
+
+    model_lower = str(model_type).lower() if model_type else ""
+    if model_lower:
+        specific_col = f"b_{model_lower}"
+        if specific_col in df_params.columns:
+            return specific_col
 
     b_candidates = [
         c
@@ -61,6 +67,10 @@ def _get_b_col(df_params):
         if c.lower().strip()
         in [
             "b",
+            "b_rasch",
+            "b_1pl",
+            "b_2pl",
+            "b_3pl",
             "kesukaran",
             "difficulty",
             "b_param",
@@ -81,7 +91,7 @@ def _get_b_col(df_params):
 
 
 def _auto_save_to_mysql(selected_model, df_matrix, df_params, df_persons_display, cache_data, scale_min, scale_max):
-    """Fungsi internal untuk menyimpan otomatis hasil IRT langsung ke MySQL Database."""
+    """Fungsi internal untuk memperbarui hasil IRT langsung ke MySQL Database tanpa merusak tabel lain."""
     try:
         usr_col_name = df_matrix.columns[0]
         df_base = df_matrix[[usr_col_name]].copy()
@@ -118,43 +128,14 @@ def _auto_save_to_mysql(selected_model, df_matrix, df_params, df_persons_display
         first_col = df_soal_to_save.columns[0]
         df_soal_to_save["kode_soal"] = df_soal_to_save[first_col]
 
-        # Petakan kolom a, b, c ke kolom sesuai model IRT
-        model_lower = selected_model.lower()
-        b_found = _get_b_col(df_soal_to_save)
-
-        if model_lower == "rasch":
-            df_soal_to_save["b_rasch"] = df_soal_to_save[b_found] if b_found else None
-        elif model_lower == "1pl":
-            df_soal_to_save["b_1pl"] = df_soal_to_save[b_found] if b_found else None
-        elif model_lower == "2pl":
-            a_col = next((c for c in df_soal_to_save.columns if c.lower() in ["a", "daya_beda", "discrimination"]), None)
-            df_soal_to_save["a_2pl"] = df_soal_to_save[a_col] if a_col else None
-            df_soal_to_save["b_2pl"] = df_soal_to_save[b_found] if b_found else None
-        elif model_lower == "3pl":
-            a_col = next((c for c in df_soal_to_save.columns if c.lower() in ["a", "daya_beda", "discrimination"]), None)
-            c_col = next((c for c in df_soal_to_save.columns if c.lower() in ["c", "guessing", "tebakan"]), None)
-            df_soal_to_save["a_3pl"] = df_soal_to_save[a_col] if a_col else None
-            df_soal_to_save["b_3pl"] = df_soal_to_save[b_found] if b_found else None
-            df_soal_to_save["c_3pl"] = df_soal_to_save[c_col] if c_col else None
-
         fit_stats = cache_data.get("fit_stats", {})
-        df_save_summary = pd.DataFrame(
-            [
-                {
-                    "metode_model": selected_model.upper(),
-                    "reliabilitas": fit_stats.get("reliability", 0.0),
-                    "log_likelihood": fit_stats.get("log_likelihood", 0.0),
-                    "aic": fit_stats.get("aic", 0.0),
-                    "bic": fit_stats.get("bic", 0.0),
-                }
-            ]
-        )
 
-        success, msg = prepare_and_save_analysis(
-            df_peserta=df_save_peserta,
-            df_soal=df_soal_to_save,
-            df_summary=df_save_summary,
-            df_sekolah=pd.DataFrame(),
+        # Panggil update_irt_model_in_db yang aman (tidak melakukan DROP TABLE)
+        success, msg = update_irt_model_in_db(
+            selected_model=selected_model,
+            df_persons=df_save_peserta,
+            df_params=df_soal_to_save,
+            fit_stats=fit_stats,
         )
         return success, msg
     except Exception as e:
@@ -182,10 +163,12 @@ def render_tab_irt(df_matrix, dfs, ctt_res):
         horizontal=True,
     )
 
-    # --- RESET CACHE DENGAN DETEKSI PERUBAHAN KONFIGURASI SKALA ATAU MODEL ---
-    current_config = f"{selected_model}_{scale_min}_{scale_max}"
-    if st.session_state.get("last_irt_config") != current_config:
-        st.session_state["last_irt_config"] = current_config
+    # --- HANYA RESET JIKA KONFIGURASI SKALA NILAI BERUBAH OLEH USER (TIDAK MERESET SAAT REFRESH/SWITCH TAB) ---
+    current_scale_key = f"{scale_min}_{scale_max}"
+    if st.session_state.get("last_irt_scale_key") is None:
+        st.session_state["last_irt_scale_key"] = current_scale_key
+    elif st.session_state.get("last_irt_scale_key") != current_scale_key:
+        st.session_state["last_irt_scale_key"] = current_scale_key
         st.session_state["irt_results"] = {}
         st.cache_data.clear()
 
@@ -438,7 +421,7 @@ def render_tab_irt(df_matrix, dfs, ctt_res):
             )
 
     df_persons_display = df_persons.copy()
-    b_col = _get_b_col(df_params)
+    b_col = _get_b_col(df_params, model_type=selected_model)
 
     if not df_persons_display.empty:
         person_id_col = df_persons_display.columns[0]

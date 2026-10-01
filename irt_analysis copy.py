@@ -2,7 +2,6 @@
 import numpy as np
 import pandas as pd
 from scipy.stats import norm
-from scipy import sparse
 
 
 def _sigmoid(x):
@@ -59,18 +58,21 @@ def run_irt_analysis(
     mean_scale=500.0,
     sd_scale=100.0,
     seed=42,
-    batch_size=50000,
 ):
     """
-    Menjalankan estimasi IRT teroptimasi memori menggunakan SciPy Sparse Matrix
-    dan Batch Processing untuk mencegah Out of Memory (Exit Code 137) pada data jutaan baris.
+    Menjalankan estimasi IRT cepat berbasis Vektorisasi NumPy (Rasch, 1PL, 2PL, 3PL)
+    dengan Deterministic Seed agar hasil selalu 100% konsisten pada setiap pengujian.
     """
+    # Kunci Random Seed NumPy untuk Menjamin Konsistensi Desimal di Setiap Eksekusi
     if seed is not None:
         np.random.seed(seed)
 
     df = df_matrix.copy()
+
+    # 1. Dapatkan kolom item murni
     item_cols = get_item_columns(df)
 
+    # 2. Ambil ID Peserta & paksa ke Tipe String yang Bersih
     usr_col = None
     for candidate in ["username", "Username", "id_peserta", "id", "user_id"]:
         if candidate in df.columns:
@@ -82,29 +84,31 @@ def run_irt_analysis(
     else:
         user_ids = df.index.astype(str)
 
-    # Konversi data item ke bentuk sparse matrix untuk menghemat RAM secara drastis
+    # 3. Konversi matriks respon ke numerik float
     X_df = df[item_cols].apply(pd.to_numeric, errors="coerce").fillna(0)
-    X_sparse = sparse.csr_matrix(X_df.to_numpy(dtype=np.float32))
-    
-    n_persons, n_items = X_sparse.shape
+    X = X_df.to_numpy(dtype=float)
+    n_persons, n_items = X.shape
 
     if n_items == 0 or n_persons == 0:
         raise ValueError("Data tidak memiliki butir soal atau peserta yang valid.")
 
-    # Hitung statistik dasar per item secara efisien via sparse operations
-    skor_mentah = np.array(X_sparse.sum(axis=1)).flatten()
-    p_i = np.clip(np.array(X_sparse.mean(axis=0)).flatten(), 0.005, 0.995)
+    # 4. Hitung Proporsi Benar Item (p_i) & Skor Mentah Peserta
+    p_i = np.clip(np.nanmean(X, axis=0), 0.005, 0.995)
+    skor_mentah = np.nansum(X, axis=1)
 
+    # Estimasi Parameter Kesukaran (b)
     b_params = np.log((1.0 - p_i) / p_i)
     c_params = np.zeros(n_items)
+
+    # --- LOGIKA BERDASARKAN MODEL_TYPE ---
     m_type_str = str(model_type).upper()
 
-    def calculate_discrimination_params_sparse(X_mat_sparse, total_scores, p_vector):
+    # Perhitungan Daya Beda (a) Berbasis Korelasi Point-Biserial & Biserial Murni
+    def calculate_discrimination_params(X_mat, total_scores, p_vector):
         a_results = []
-        dense_sample = X_mat_sparse.toarray() # Diambil per kolom secara aman
         for j in range(n_items):
-            item_resp = dense_sample[:, j]
-            rest_score = total_scores - item_resp
+            item_resp = X_mat[:, j]
+            rest_score = total_scores - item_resp  # Rest-score tanpa bias item j
             
             p = p_vector[j]
             q = 1.0 - p
@@ -116,16 +120,19 @@ def run_irt_analysis(
                 a_results.append(1.0)
                 continue
                 
+            # Korelasi Point-Biserial (r_pbis) antara item dan rest-score
             r_pbis = np.corrcoef(item_resp, rest_score)[0, 1]
             if np.isnan(r_pbis):
                 r_pbis = 0.0
                 
+            # Konversi ke Korelasi Biserial (r_bis) menggunakan ordinat kurva normal
             z_p = norm.ppf(1.0 - p)
-            y_p = norm.pdf(z_p)
+            y_p = norm.pdf(z_p)  # Ordinat Gauss
             
             r_bis = (r_pbis * np.sqrt(p * q)) / max(y_p, 1e-5)
             r_bis = np.clip(r_bis, -0.95, 0.95)
             
+            # Konversi r_bis ke parameter daya beda IRT (a)
             a_val = (1.7 * r_bis) / np.sqrt(max(1.0 - (r_bis ** 2), 0.05))
             a_results.append(a_val)
             
@@ -138,7 +145,7 @@ def run_irt_analysis(
         num_params = n_items + n_persons
 
     elif m_type_str == "1PL":
-        a_raw = calculate_discrimination_params_sparse(X_sparse, skor_mentah, p_i)
+        a_raw = calculate_discrimination_params(X, skor_mentah, p_i)
         a_common = float(np.clip(np.mean(a_raw), 0.2, 2.5))
 
         a_params = np.full(n_items, a_common)
@@ -147,59 +154,57 @@ def run_irt_analysis(
         num_params = n_items + 1 + n_persons
 
     elif m_type_str == "3PL":
-        a_params = calculate_discrimination_params_sparse(X_sparse, skor_mentah, p_i)
-        bottom_idx = np.argsort(skor_mentah)[: max(1, int(n_persons * 0.10))]
-        c_params = np.clip(np.mean(X_sparse[bottom_idx, :].toarray(), axis=0), 0.0, 0.25)
+        a_params = calculate_discrimination_params(X, skor_mentah, p_i)
 
-        weighted_scores = np.array(X_sparse.dot(a_params)).flatten()
+        bottom_idx = np.argsort(skor_mentah)[: max(1, int(n_persons * 0.10))]
+        c_params = np.clip(np.mean(X[bottom_idx, :], axis=0), 0.0, 0.25)
+
+        weighted_scores = np.dot(X, a_params)
         max_weighted = np.sum(a_params)
-        p_person_weighted = np.clip(weighted_scores / max(max_weighted, 1.0), 0.005, 0.995)
+        p_person_weighted = np.clip(
+            weighted_scores / max(max_weighted, 1.0), 0.005, 0.995
+        )
         theta = np.log(p_person_weighted / (1.0 - p_person_weighted))
         num_params = (3 * n_items) + n_persons
 
     else:  # Default '2PL'
-        a_params = calculate_discrimination_params_sparse(X_sparse, skor_mentah, p_i)
-        weighted_scores = np.array(X_sparse.dot(a_params)).flatten()
+        a_params = calculate_discrimination_params(X, skor_mentah, p_i)
+
+        weighted_scores = np.dot(X, a_params)
         max_weighted = np.sum(a_params)
-        p_person_weighted = np.clip(weighted_scores / max(max_weighted, 1.0), 0.005, 0.995)
+        p_person_weighted = np.clip(
+            weighted_scores / max(max_weighted, 1.0), 0.005, 0.995
+        )
         theta = np.log(p_person_weighted / (1.0 - p_person_weighted))
         num_params = (2 * n_items) + n_persons
 
+    # Kategori b
     kat_conditions = [b_params > 1.0, b_params < -1.0]
     kat_choices = ["Sukar", "Mudah"]
     kategori_b = np.select(kat_conditions, kat_choices, default="Sedang")
 
-    # Evaluasi Probabilitas, Log-Likelihood, dan SEM secara Batch (Memory Safe)
-    log_likelihood = 0.0
-    info_per_person = np.zeros(n_persons)
-    
-    for start_idx in range(0, n_persons, batch_size):
-        end_idx = min(start_idx + batch_size, n_persons)
-        
-        theta_batch = theta[start_idx:end_idx]
-        X_batch = X_sparse[start_idx:end_idx].toarray()
-        
-        logits_batch = a_params[None, :] * (theta_batch[:, None] - b_params[None, :])
-        P_batch = c_params[None, :] + (1.0 - c_params[None, :]) * _sigmoid(logits_batch)
-        P_batch_clipped = np.clip(P_batch, 1e-7, 1.0 - 1e-7)
-        
-        log_likelihood += float(np.sum(
-            X_batch * np.log(P_batch_clipped) + (1.0 - X_batch) * np.log(1.0 - P_batch_clipped)
-        ))
-        
-        info_per_person[start_idx:end_idx] = np.sum(
-            (a_params[None, :] ** 2) * P_batch * (1.0 - P_batch), axis=1
-        )
+    # Probabilitas & Standard Error of Measurement (SEM) per Peserta
+    logits = a_params[None, :] * (theta[:, None] - b_params[None, :])
+    P_val = c_params[None, :] + (1.0 - c_params[None, :]) * _sigmoid(logits)
+    P_val_clipped = np.clip(P_val, 1e-7, 1.0 - 1e-7)
 
+    info_per_person = np.sum((a_params[None, :] ** 2) * P_val * (1.0 - P_val), axis=1)
     sem_list = np.where(info_per_person > 0, 1.0 / np.sqrt(info_per_person), 0.999)
 
+    # --- HITUNG STATISTIK FIT MODEL ---
+    log_likelihood = float(
+        np.sum(X * np.log(P_val_clipped) + (1.0 - X) * np.log(1.0 - P_val_clipped))
+    )
     aic = float(2 * num_params - 2 * log_likelihood)
     bic = float(num_params * np.log(max(n_persons * n_items, 1)) - 2 * log_likelihood)
 
     var_theta = np.var(theta)
     mean_sem2 = np.mean(sem_list**2)
-    reliability = float(np.clip((var_theta - mean_sem2) / max(var_theta, 1e-5), 0.0, 0.99))
+    reliability = float(
+        np.clip((var_theta - mean_sem2) / max(var_theta, 1e-5), 0.0, 0.99)
+    )
 
+    # DIBERSIHKAN: Hanya gunakan 1 kolom nama/kode soal
     df_item_params = pd.DataFrame(
         {
             "Kode Soal": [str(c) for c in item_cols],
@@ -213,6 +218,7 @@ def run_irt_analysis(
         }
     )
 
+    # Transformasi Skala Konversi Mengikuti min_scale dan max_scale dari UI Input
     t_min, t_max = np.min(theta), np.max(theta)
     if t_max != t_min:
         nilai_scaled = min_scale + ((theta - t_min) / (t_max - t_min)) * (max_scale - min_scale)
