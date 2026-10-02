@@ -151,7 +151,7 @@ def format_duration(seconds):
 
 # 3. Header Utama Aplikasi
 st.markdown(
-    '<div class="main-header">📊 Dashboard Pengolahan & Analisis Psikometri TKA (v.3)</div>',
+    '<div class="main-header">📊 Dashboard Pengolahan & Analisis Psikometri TKA (v.4)</div>',
     unsafe_allow_html=True,
 )
 st.markdown(

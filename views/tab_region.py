@@ -108,6 +108,32 @@ def _clean_kabupaten_name(name_str):
     return val if val else "TIDAK TERDEFINISI"
 
 
+def _get_feature_centroid(geom):
+    """Menghitung koordinat centroid (lat, lon) dari polygon/multipolygon GeoJSON."""
+    if not geom or "coordinates" not in geom:
+        return None, None
+    coords = geom.get("coordinates", [])
+    t = geom.get("type", "")
+    try:
+        if t == "Polygon":
+            if not coords:
+                return None, None
+            pts = sorted(coords, key=lambda r: len(r), reverse=True)[0]
+        elif t == "MultiPolygon":
+            if not coords:
+                return None, None
+            pts = sorted(coords, key=lambda p: len(p[0]) if p else 0, reverse=True)[0][0]
+        else:
+            return None, None
+        if not pts:
+            return None, None
+        mean_lon = sum(p[0] for p in pts) / len(pts)
+        mean_lat = sum(p[1] for p in pts) / len(pts)
+        return mean_lat, mean_lon
+    except Exception:
+        return None, None
+
+
 @st.cache_data(ttl=3600, show_spinner=False)
 def _load_geojson_indonesia():
     """Memuat GeoJSON Wilayah Provinsi Indonesia dengan offline fallback lokal."""
@@ -693,6 +719,42 @@ def render_tab_region(df_matrix_school, dfs):
                     marker_line_color="#ffffff", marker_line_width=1.8
                 )
 
+                # Tambahkan label teks nama provinsi di peta nasional
+                prov_centroids = {}
+                for f in geojson_id.get("features", []):
+                    p_name = f.get("properties", {}).get("norm_name")
+                    if p_name:
+                        c_lat, c_lon = _get_feature_centroid(f.get("geometry"))
+                        if c_lat is not None and c_lon is not None:
+                            prov_centroids[p_name] = (c_lat, c_lon)
+
+                p_lats, p_lons, p_texts = [], [], []
+                for _, r_p in stats_prov_map.iterrows():
+                    pn = r_p["Provinsi_Clean"]
+                    if pn in prov_centroids:
+                        clat, clon = prov_centroids[pn]
+                        p_lats.append(clat)
+                        p_lons.append(clon)
+                        p_texts.append(pn)
+
+                if p_lats:
+                    fig_map.add_trace(
+                        go.Scattergeo(
+                            lon=p_lons,
+                            lat=p_lats,
+                            text=p_texts,
+                            mode="text",
+                            textposition="middle center",
+                            textfont=dict(
+                                family="Arial, sans-serif",
+                                size=9,
+                                color="#ffffff",
+                            ),
+                            hoverinfo="skip",
+                            showlegend=False,
+                        )
+                    )
+
                 fig_map.update_geos(
                     fitbounds="locations",
                     visible=False,
@@ -824,19 +886,49 @@ def render_tab_region(df_matrix_school, dfs):
                     marker_line_color="#ffffff", marker_line_width=1.5
                 )
 
+                # Tambahkan label teks nama kabupaten/kota di peta drill-down
+                kab_centroids = {}
+                for fc in target_features:
+                    kn = fc["properties"].get("norm_kab")
+                    if kn:
+                        c_lat, c_lon = _get_feature_centroid(fc.get("geometry"))
+                        if c_lat is not None and c_lon is not None:
+                            kab_centroids[kn] = (c_lat, c_lon)
+
+                k_lats, k_lons, k_texts = [], [], []
+                for _, r_k in stats_kab_map.iterrows():
+                    kn = r_k["Kabupaten_Clean"]
+                    if kn in kab_centroids:
+                        clat, clon = kab_centroids[kn]
+                        k_lats.append(clat)
+                        k_lons.append(clon)
+                        k_texts.append(kn)
+
+                if k_lats:
+                    fig_kab_map.add_trace(
+                        go.Scattergeo(
+                            lon=k_lons,
+                            lat=k_lats,
+                            text=k_texts,
+                            mode="text",
+                            textposition="middle center",
+                            textfont=dict(
+                                family="Arial, sans-serif",
+                                size=10,
+                                color="#ffffff",
+                            ),
+                            hoverinfo="skip",
+                            showlegend=False,
+                        )
+                    )
+
                 fig_kab_map.update_geos(
                     fitbounds="locations",
                     visible=False,
-                    showcoastlines=True,
-                    coastlinecolor="#ffffff",
-                    coastlinewidth=1.2,
-                    showsubunits=True,
-                    subunitcolor="#ffffff",
-                    subunitwidth=1.5,
-                    showland=True,
-                    landcolor="#1c212c",
-                    showocean=True,
-                    oceancolor="#0e1117",
+                    showcoastlines=False,
+                    showsubunits=False,
+                    showland=False,
+                    showocean=False,
                 )
 
                 fig_kab_map.update_layout(
