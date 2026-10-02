@@ -28,6 +28,7 @@ from views.tab_region import (
     render_tab_region,
     resolve_province_info,
     extract_region_codes,
+    get_kode_kabupaten_map,
     KODE_PROVINSI_MAP,
 )
 from views.tab_school import render_tab_school
@@ -303,6 +304,7 @@ def load_data_from_db():
         kb_series = df_peserta["nama_kabupaten"] if "nama_kabupaten" in df_peserta.columns else pd.Series([None] * len(df_peserta))
         u_series = df_peserta[col_u_pes]
 
+        kab_map = get_kode_kabupaten_map()
         for p_v, k_v, u_v, kb_v in zip(p_series, k_series, u_series, kb_series):
             c_p, n_p = resolve_province_info(p_v, k_v, u_v)
             kd_norm.append(c_p)
@@ -312,6 +314,8 @@ def load_data_from_db():
             kb_str = str(kb_v).strip() if pd.notna(kb_v) else ""
             if kb_str and kb_str.upper() not in ["", "-", "NAN", "NONE", "NULL", "TIDAK TERDEFINISI"]:
                 kab_norm.append(kb_str)
+            elif kd_ray and kd_ray in kab_map:
+                kab_norm.append(kab_map[kd_ray])
             elif kd_ray:
                 kab_norm.append(f"KAB/KOTA {kd_ray}")
             else:
@@ -1084,6 +1088,7 @@ if btn_process:
                 clean_kd_rayons = []
                 clean_kabs = []
 
+                kab_map = get_kode_kabupaten_map()
                 for p_v, k_v, u_v, kb_v in zip(raw_prov, raw_kd, raw_user, raw_kab_init):
                     c_code, c_name = resolve_province_info(p_v, k_v, u_v)
                     _, kd_ray, _ = extract_region_codes(u_v)
@@ -1095,6 +1100,8 @@ if btn_process:
                     kb_str = str(kb_v).strip() if pd.notna(kb_v) else ""
                     if kb_str and kb_str not in ["-", "NAN", "NONE", "NULL", "TIDAK TERDEFINISI"]:
                         clean_kabs.append(kb_str)
+                    elif kd_ray and kd_ray in kab_map:
+                        clean_kabs.append(kab_map[kd_ray])
                     elif kd_ray:
                         clean_kabs.append(f"KAB/KOTA {kd_ray}")
                     else:

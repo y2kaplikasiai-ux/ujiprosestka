@@ -145,23 +145,51 @@ def _load_geojson_indonesia():
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def _load_geojson_kabupaten():
-    """Memuat GeoJSON Wilayah Kabupaten/Kota Indonesia dengan sumber stabil."""
+    """Memuat GeoJSON Wilayah Kabupaten/Kota Indonesia dengan prioritas file lokal."""
+    # 1. Coba baca dari file lokal data/indonesia_kab.geojson
+    try:
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        local_path = os.path.join(base_dir, "data", "indonesia_kab.geojson")
+        if os.path.exists(local_path):
+            with open(local_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if data and "features" in data:
+                    return data
+    except Exception:
+        pass
+
+    # 2. Remote fallback (URL valid)
     urls = [
-        "https://raw.githubusercontent.com/superpikar/indonesia-geojson/master/indonesia-kab-kodya.json",
-        "https://raw.githubusercontent.com/ans-4175/indonesia-geojson/master/indonesia-kabupaten.geojson",
+        "https://raw.githubusercontent.com/TheMaggieSimpson/IndonesiaGeoJSON/main/kota-kabupaten.json",
     ]
     for url in urls:
         try:
             req = urllib.request.Request(
                 url, headers={"User-Agent": "Mozilla/5.0"}
             )
-            with urllib.request.urlopen(req, timeout=5) as response:
+            with urllib.request.urlopen(req, timeout=10) as response:
                 data = json.loads(response.read().decode())
                 if data and "features" in data:
                     return data
         except Exception:
             continue
     return None
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def get_kode_kabupaten_map():
+    """Membangun pemetaan kode rayon 4 digit (kolom 2-5) ke nama kabupaten/kota resmi."""
+    geo = _load_geojson_kabupaten()
+    if not geo:
+        return {}
+    res = {}
+    for feat in geo.get("features", []):
+        p = feat.get("properties", {})
+        cc = str(p.get("CC_2", "")).strip()
+        nm = str(p.get("NAME_2", "")).strip()
+        if cc and nm:
+            res[cc] = _clean_kabupaten_name(nm)
+    return res
 
 
 REV_KODE_PROVINSI_MAP = {v: k for k, v in KODE_PROVINSI_MAP.items()}
@@ -328,14 +356,17 @@ def _get_region_df(df_matrix_school, dfs):
         kd_list.append(code_p)
         prov_list.append(name_p)
 
+    kab_map = get_kode_kabupaten_map()
     for kb_val, u_val in zip(kab_series, u_series):
         cleaned_kab = _clean_kabupaten_name(kb_val) if pd.notna(kb_val) and str(kb_val).strip() not in ["", "-", "nan", "none", "null", "TIDAK TERDEFINISI"] else None
-        if cleaned_kab:
+        if cleaned_kab and cleaned_kab != "TIDAK TERDEFINISI":
             kab_list.append(cleaned_kab)
         else:
             # Fallback: jika nama kabupaten belum ada, gunakan kode rayon dari username kolom 2-5
             _, kd_rayon, _ = extract_region_codes(u_val)
-            if kd_rayon:
+            if kd_rayon and kd_rayon in kab_map:
+                kab_list.append(kab_map[kd_rayon])
+            elif kd_rayon:
                 kab_list.append(f"KAB/KOTA {kd_rayon}")
             else:
                 kab_list.append("TIDAK TERDEFINISI")
@@ -698,43 +729,52 @@ def render_tab_region(df_matrix_school, dfs):
         )
 
         geojson_kab = _load_geojson_kabupaten()
+        kab_map = get_kode_kabupaten_map()
 
-        if not stats_kab_local.empty and geojson_kab:
-            for feature in geojson_kab.get("features", []):
-                props = feature.get("properties", {})
-                found_kab = None
-                for k_prop in [
-                    "kabkota",
-                    "KABKOT",
-                    "NAME_2",
-                    "kabupaten",
-                    "name",
-                    "NAME_1",
-                    "KABUPATEN",
-                    "kota",
-                ]:
-                    if k_prop in props and props[k_prop]:
-                        found_kab = props[k_prop]
-                        break
-                feature["properties"]["norm_kab"] = _clean_kabupaten_name(
-                    found_kab
-                )
+        if not stats_kab_local.empty:
+            # 1. Filter GeoJSON khusus untuk provinsi yang dipilih
+            target_features = []
+            if geojson_kab:
+                for feature in geojson_kab.get("features", []):
+                    props = feature.get("properties", {})
+                    p_prov = props.get("NAME_1", "")
+                    if _clean_province_name(p_prov) == target_prov:
+                        fc = {
+                            "type": "Feature",
+                            "properties": dict(props),
+                            "geometry": feature.get("geometry")
+                        }
+                        raw_kab = props.get("NAME_2") or props.get("kabupaten") or props.get("name")
+                        fc["properties"]["norm_kab"] = _clean_kabupaten_name(raw_kab)
+                        fc["properties"]["code_kab"] = str(props.get("CC_2", "")).strip()
+                        target_features.append(fc)
 
-            stats_kab_local["Kabupaten_Clean"] = stats_kab_local[
-                "nama_kabupaten"
-            ].apply(_clean_kabupaten_name)
+            prov_geojson = {"type": "FeatureCollection", "features": target_features} if target_features else None
+
+            # 2. Normalisasi penamaan kabupaten di data hasil olahan
+            def _resolve_kab_entry(val):
+                if not val or pd.isna(val):
+                    return "TIDAK TERDEFINISI"
+                val_s = str(val).strip()
+                m = re.search(r"\b(\d{4})\b", val_s)
+                if m and m.group(1) in kab_map:
+                    return _clean_kabupaten_name(kab_map[m.group(1)])
+                return _clean_kabupaten_name(val_s)
+
+            stats_kab_local["Kabupaten_Clean"] = stats_kab_local["nama_kabupaten"].apply(_resolve_kab_entry)
 
             valid_kab_features = {
                 f["properties"].get("norm_kab")
-                for f in geojson_kab.get("features", [])
+                for f in target_features
                 if f.get("properties", {}).get("norm_kab")
-            }
+            } if target_features else set()
+
             stats_kab_map = stats_kab_local[
                 (stats_kab_local["Kabupaten_Clean"] != "TIDAK TERDEFINISI")
                 & (stats_kab_local["Kabupaten_Clean"].isin(valid_kab_features))
             ].copy()
 
-            if not stats_kab_map.empty:
+            if not stats_kab_map.empty and prov_geojson:
                 v_scores = stats_kab_map["Rata_Rata"].dropna()
                 min_k = float(v_scores.min()) if not v_scores.empty else 0.0
                 max_k = float(v_scores.max()) if not v_scores.empty else 100.0
@@ -745,7 +785,7 @@ def render_tab_region(df_matrix_school, dfs):
 
                 fig_kab_map = px.choropleth(
                     stats_kab_map,
-                    geojson=geojson_kab,
+                    geojson=prov_geojson,
                     locations="Kabupaten_Clean",
                     featureidkey="properties.norm_kab",
                     color="Rata_Rata",
@@ -762,8 +802,7 @@ def render_tab_region(df_matrix_school, dfs):
                         "Max": ":.2f",
                     },
                     title=(
-                        f"<b>Sebaran Nilai Kabupaten/Kota di Provinsi"
-                        f" {target_prov}</b>"
+                        f"<b>Sebaran Nilai Kabupaten/Kota di Provinsi {target_prov}</b>"
                     ),
                 )
 
@@ -791,18 +830,42 @@ def render_tab_region(df_matrix_school, dfs):
                     paper_bgcolor="#0e1117",
                     plot_bgcolor="#0e1117",
                     font_color="#ffffff",
-                    height=550,
+                    height=520,
                 )
 
                 st.plotly_chart(fig_kab_map, use_container_width=True)
             else:
                 st.info(
-                    f"ℹ️ Peta batas visual belum tersedia untuk nama-nama kabupaten di provinsi **{target_prov}**, silakan tinjau grafik dan tabel di bawah."
+                    f"ℹ️ Peta polygon kabupaten/kota untuk **{target_prov}** sedang tidak tersedia, menampilkan grafik sebaran nilai di bawah."
                 )
+
+            # Tampilkan grafik peringkat Kabupaten/Kota di provinsi terpilih
+            df_chart_local = stats_kab_local[stats_kab_local["Kabupaten_Clean"] != "TIDAK TERDEFINISI"].sort_values(
+                by="Rata_Rata", ascending=False
+            )
+            if not df_chart_local.empty:
+                st.markdown(f"#### 📊 Peringkat Kabupaten/Kota di Provinsi {target_prov}")
+                fig_local_bar = px.bar(
+                    df_chart_local,
+                    x="Kabupaten_Clean",
+                    y="Rata_Rata",
+                    color="Rata_Rata",
+                    color_continuous_scale=custom_red_to_blue,
+                    text_auto=".1f",
+                    labels={"Kabupaten_Clean": "Kabupaten / Kota", "Rata_Rata": "Rata-Rata Skor"},
+                    title=f"<b>Rata-Rata Nilai per Kabupaten/Kota di {target_prov}</b>",
+                )
+                fig_local_bar.update_layout(
+                    paper_bgcolor="#0e1117",
+                    plot_bgcolor="#0e1117",
+                    font_color="#ffffff",
+                    height=380,
+                    margin={"r": 0, "t": 40, "l": 0, "b": 0},
+                )
+                st.plotly_chart(fig_local_bar, use_container_width=True)
         else:
             st.warning(
-                "⚠️ Data GeoJSON Kabupaten/Kota atau data rekap kabupaten"
-                f" untuk provinsi **{target_prov}** belum lengkap."
+                f"⚠️ Belum ada data peserta untuk provinsi **{target_prov}**."
             )
 
     st.divider()
