@@ -52,6 +52,48 @@ KODE_PROVINSI_MAP = {
     "96": "PAPUA BARAT DAYA",
 }
 
+# Kamus Nama Singkat Standar 38 Provinsi Indonesia
+PROVINSI_SINGKAT_MAP = {
+    "ACEH": "ACEH",
+    "SUMATERA UTARA": "SUMUT",
+    "SUMATERA BARAT": "SUMBAR",
+    "RIAU": "RIAU",
+    "JAMBI": "JAMBI",
+    "SUMATERA SELATAN": "SUMSEL",
+    "BENGKULU": "BENGKULU",
+    "LAMPUNG": "LAMPUNG",
+    "KEPULAUAN BANGKA BELITUNG": "BABEL",
+    "KEPULAUAN RIAU": "KEPRI",
+    "DKI JAKARTA": "DKI",
+    "JAWA BARAT": "JABAR",
+    "JAWA TENGAH": "JATENG",
+    "DI YOGYAKARTA": "DIY",
+    "JAWA TIMUR": "JATIM",
+    "BANTEN": "BANTEN",
+    "BALI": "BALI",
+    "NUSA TENGGARA BARAT": "NTB",
+    "NUSA TENGGARA TIMUR": "NTT",
+    "KALIMANTAN BARAT": "KALBAR",
+    "KALIMANTAN TENGAH": "KALTENG",
+    "KALIMANTAN SELATAN": "KALSEL",
+    "KALIMANTAN TIMUR": "KALTIM",
+    "KALIMANTAN UTARA": "KALTARA",
+    "SULAWESI UTARA": "SULUT",
+    "SULAWESI TENGAH": "SULTENG",
+    "SULAWESI SELATAN": "SULSEL",
+    "SULAWESI TENGGARA": "SULTRA",
+    "GORONTALO": "GORONTALO",
+    "SULAWESI BARAT": "SULBAR",
+    "MALUKU": "MALUKU",
+    "MALUKU UTARA": "MALUT",
+    "PAPUA": "PAPUA",
+    "PAPUA BARAT": "PAPBAR",
+    "PAPUA SELATAN": "PAPSEL",
+    "PAPUA TENGAH": "PAPTENG",
+    "PAPUA PEGUNUNGAN": "PAPPEG",
+    "PAPUA BARAT DAYA": "PAPBD",
+}
+
 
 def _clean_province_name(name_str):
     """Membersihkan dan menyelaraskan penamaan provinsi secara agresif."""
@@ -87,10 +129,6 @@ def _clean_province_name(name_str):
         "NTT": "NUSA TENGGARA TIMUR",
         "IRIAN JAYA BARAT": "PAPUA BARAT",
         "IRIAN JAYA TIMUR": "PAPUA",
-        "PAPUA BARAT DAYA": "PAPUA BARAT",
-        "PAPUA SELATAN": "PAPUA",
-        "PAPUA TENGAH": "PAPUA",
-        "PAPUA PEGUNUNGAN": "PAPUA",
     }
     return alias_map.get(val, val)
 
@@ -149,8 +187,9 @@ def _load_geojson_indonesia():
     except Exception:
         pass
 
-    # 2. Fallback remote URLs
+    # 2. Fallback remote URLs (38 Provinsi terkini)
     urls = [
+        "https://raw.githubusercontent.com/ardian28/GeoJson-Indonesia-38-Provinsi/main/Provinsi/38%20Provinsi%20Indonesia%20-%20Provinsi.json",
         "https://raw.githubusercontent.com/superpikar/indonesia-geojson/master/indonesia-province-simple.json",
         "https://raw.githubusercontent.com/ans-4175/indonesia-geojson/master/indonesia-province.geojson",
         "https://raw.githubusercontent.com/superpikar/indonesia-geojson/master/indonesia.geojson",
@@ -610,7 +649,7 @@ def render_tab_region(df_matrix_school, dfs):
         p for p in df_merged["nama_provinsi"].unique()
         if p and p != "TIDAK TERDEFINISI" and not str(p).isdigit() and str(p).lower() != "nan"
     ])
-    col_nav1, col_nav2 = st.columns(2)
+    col_nav1, col_theme, col_nav2 = st.columns([5, 4, 3])
 
     with col_nav1:
         selected_prov_view = st.selectbox(
@@ -626,6 +665,23 @@ def render_tab_region(df_matrix_school, dfs):
             ),
         )
 
+    with col_theme:
+        color_theme_options = {
+            "🎨 Elegan Lembut (Merah-Amber-Hijau-Biru)": ["#991B1B", "#D97706", "#059669", "#2563EB"],
+            "🌊 Biru Samudra (Deep Ocean)": ["#0F172A", "#0284C7", "#38BDF8", "#93C5FD"],
+            "🌿 Emerald Hijau (Teal & Mint)": ["#064E3B", "#059669", "#34D399", "#A7F3D0"],
+            "🌌 Plasma Modern": "Plasma",
+            "🔬 Viridis Standar": "Viridis",
+            "🔥 Magma Hangat": "Magma",
+        }
+        selected_theme_name = st.selectbox(
+            "🎨 Palet Warna Peta:",
+            options=list(color_theme_options.keys()),
+            index=0,
+            help="Pilih gradasi warna peta yang nyaman di mata."
+        )
+        map_color_scale = color_theme_options[selected_theme_name]
+
     with col_nav2:
         st.write("")
         st.write("")
@@ -638,8 +694,6 @@ def render_tab_region(df_matrix_school, dfs):
     else:
         st.session_state.selected_geo_prov = None
 
-    custom_red_to_blue = ["red", "yellow", "blue"]
-
     if st.session_state.selected_geo_prov is None:
         geojson_id = _load_geojson_indonesia()
 
@@ -648,13 +702,13 @@ def render_tab_region(df_matrix_school, dfs):
                 props = feature.get("properties", {})
                 found_name = None
                 for k_prop in [
+                    "PROVINSI",
                     "state",
                     "NAME_1",
                     "Propinsi",
                     "provinsi",
                     "name",
                     "NAME_0",
-                    "PROVINSI",
                     "name_province",
                     "nama",
                 ]:
@@ -697,7 +751,7 @@ def render_tab_region(df_matrix_school, dfs):
                     locations="Provinsi_Clean",
                     featureidkey="properties.norm_name",
                     color="Rata_Rata",
-                    color_continuous_scale=custom_red_to_blue,
+                    color_continuous_scale=map_color_scale,
                     range_color=(min_val, max_val),
                     labels={
                         "Rata_Rata": "Rata-Rata Skor",
@@ -716,10 +770,10 @@ def render_tab_region(df_matrix_school, dfs):
                 )
 
                 fig_map.update_traces(
-                    marker_line_color="#ffffff", marker_line_width=1.8
+                    marker_line_color="#ffffff", marker_line_width=1.2
                 )
 
-                # Tambahkan label teks nama provinsi di peta nasional
+                # Tambahkan label teks nama singkat provinsi di peta nasional
                 prov_centroids = {}
                 for f in geojson_id.get("features", []):
                     p_name = f.get("properties", {}).get("norm_name")
@@ -728,6 +782,17 @@ def render_tab_region(df_matrix_school, dfs):
                         if c_lat is not None and c_lon is not None:
                             prov_centroids[p_name] = (c_lat, c_lon)
 
+                # Cek jika ada kolom nama singkat provinsi dari data sekolah / master peserta
+                col_short = next(
+                    (c for c in df_merged.columns if any(k in str(c).lower() for k in ["singkat", "short", "singkatan", "abbr"])),
+                    None
+                )
+                short_name_map = {}
+                if col_short:
+                    for p_raw, s_raw in zip(df_merged["nama_provinsi"], df_merged[col_short]):
+                        if pd.notna(p_raw) and pd.notna(s_raw) and str(s_raw).strip():
+                            short_name_map[_clean_province_name(p_raw)] = str(s_raw).strip().upper()
+
                 p_lats, p_lons, p_texts = [], [], []
                 for _, r_p in stats_prov_map.iterrows():
                     pn = r_p["Provinsi_Clean"]
@@ -735,7 +800,9 @@ def render_tab_region(df_matrix_school, dfs):
                         clat, clon = prov_centroids[pn]
                         p_lats.append(clat)
                         p_lons.append(clon)
-                        p_texts.append(pn)
+                        # Gunakan nama singkat dari tabel sekolah jika ada, atau singkatan standar
+                        label_name = short_name_map.get(pn, PROVINSI_SINGKAT_MAP.get(pn, pn))
+                        p_texts.append(label_name)
 
                 if p_lats:
                     fig_map.add_trace(
@@ -746,7 +813,7 @@ def render_tab_region(df_matrix_school, dfs):
                             mode="text",
                             textposition="middle center",
                             textfont=dict(
-                                family="Arial, sans-serif",
+                                family="Inter, Roboto, Arial, sans-serif",
                                 size=9,
                                 color="#ffffff",
                             ),
@@ -758,14 +825,10 @@ def render_tab_region(df_matrix_school, dfs):
                 fig_map.update_geos(
                     fitbounds="locations",
                     visible=False,
-                    showcoastlines=True,
-                    coastlinecolor="#ffffff",
-                    coastlinewidth=1.2,
-                    showsubunits=True,
-                    subunitcolor="#ffffff",
-                    subunitwidth=1.8,
+                    showcoastlines=False,
+                    showsubunits=False,
                     showland=True,
-                    landcolor="#1c212c",
+                    landcolor="#181c24",
                     showocean=True,
                     oceancolor="#0e1117",
                 )
@@ -865,7 +928,7 @@ def render_tab_region(df_matrix_school, dfs):
                     locations="Kabupaten_Clean",
                     featureidkey="properties.norm_kab",
                     color="Rata_Rata",
-                    color_continuous_scale=custom_red_to_blue,
+                    color_continuous_scale=map_color_scale,
                     range_color=(min_k, max_k),
                     labels={
                         "Rata_Rata": "Rata-Rata Skor",
@@ -956,7 +1019,7 @@ def render_tab_region(df_matrix_school, dfs):
                     x="Kabupaten_Clean",
                     y="Rata_Rata",
                     color="Rata_Rata",
-                    color_continuous_scale=custom_red_to_blue,
+                    color_continuous_scale=map_color_scale,
                     text_auto=".1f",
                     labels={"Kabupaten_Clean": "Kabupaten / Kota", "Rata_Rata": "Rata-Rata Skor"},
                     title=f"<b>Rata-Rata Nilai per Kabupaten/Kota di {target_prov}</b>",
@@ -983,7 +1046,7 @@ def render_tab_region(df_matrix_school, dfs):
         x="nama_provinsi",
         y="Rata_Rata",
         color="Rata_Rata",
-        color_continuous_scale=custom_red_to_blue,
+        color_continuous_scale=map_color_scale,
         text_auto=".1f",
         title=(
             "<b>Rata-Rata Nilai Konversi"
@@ -1046,7 +1109,7 @@ def render_tab_region(df_matrix_school, dfs):
                 x="nama_kabupaten",
                 y="Rata_Rata",
                 color="Rata_Rata",
-                color_continuous_scale=custom_red_to_blue,
+                color_continuous_scale=map_color_scale,
                 text_auto=".1f",
                 title=(
                     "<b>Rata-Rata Nilai Konversi Kabupaten/Kota di"
@@ -1087,7 +1150,7 @@ def render_tab_region(df_matrix_school, dfs):
             x="nama_kabupaten",
             y="Rata_Rata",
             color="Rata_Rata",
-            color_continuous_scale=custom_red_to_blue,
+            color_continuous_scale=map_color_scale,
             text_auto=".1f",
             title="<b>Top 30 Kabupaten/Kota Tertinggi se-Indonesia</b>",
             labels={
