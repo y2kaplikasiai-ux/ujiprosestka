@@ -102,7 +102,7 @@ def _clean_kabupaten_name(name_str):
     val = str(name_str).strip().upper()
     if val in ["", "NAN", "NONE", "NULL", "-", "TIDAK TERDEFINISI"]:
         return "TIDAK TERDEFINISI"
-    val = re.sub(r"^(KABUPATEN|KAB\.|KAB|KOTA ADMINISTRASI|KOTA)\s+", "", val)
+    val = re.sub(r"^(KABUPATEN|KAB\.|KAB|KOTA ADMINISTRASI|KOTA ADM\.|KOTA ADM|KOTA|ADM\.|ADM)\s+", "", val)
     val = re.sub(r"[^A-Z0-9\s]", " ", val)
     val = re.sub(r"\s+", " ", val).strip()
     return val if val else "TIDAK TERDEFINISI"
@@ -189,6 +189,20 @@ def get_kode_kabupaten_map():
         nm = str(p.get("NAME_2", "")).strip()
         if cc and nm:
             res[cc] = _clean_kabupaten_name(nm)
+
+    # Tambahan alias kode rayon Puspendik/Kemendikbud (kolom 2-5)
+    puspendik_aliases = {
+        "3101": "JAKARTA PUSAT",
+        "3102": "JAKARTA UTARA",
+        "3103": "JAKARTA BARAT",
+        "3104": "JAKARTA SELATAN",
+        "3105": "JAKARTA TIMUR",
+        "3106": "KEPULAUAN SERIBU",
+    }
+    for k, v in puspendik_aliases.items():
+        if k not in res or res[k] == "KEPULAUAN SERIBU":
+            res[k] = v
+
     return res
 
 
