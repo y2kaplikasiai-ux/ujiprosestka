@@ -3,6 +3,7 @@ import numpy as np
 import pandas as pd
 import pymysql
 from sqlalchemy import create_engine, text
+from views.tab_region import resolve_province_info
 
 DB_HOST = "localhost"
 DB_USER = "root"
@@ -99,20 +100,21 @@ def pipeline_proses_dan_simpan_mysql(df_matrix_school, irt_dict, scale_params=No
         if "nama_kabupaten" in df_matrix_school.columns
         else "-"
     )
-    df_final["kode_provinsi"] = (
-        df_matrix_school["kd_prop"]
-        if "kd_prop" in df_matrix_school.columns
-        else (
-            df_matrix_school["kode_provinsi"]
-            if "kode_provinsi" in df_matrix_school.columns
-            else df_final["username"].str[1:3]
-        )
+    p_src = df_matrix_school["nama_provinsi"] if "nama_provinsi" in df_matrix_school.columns else [None] * len(df_final)
+    k_src = df_matrix_school["kd_prop"] if "kd_prop" in df_matrix_school.columns else (
+        df_matrix_school["kode_provinsi"] if "kode_provinsi" in df_matrix_school.columns else [None] * len(df_final)
     )
-    df_final["nama_provinsi"] = (
-        df_matrix_school["nama_provinsi"]
-        if "nama_provinsi" in df_matrix_school.columns
-        else df_final["kode_provinsi"]
-    )
+    u_src = df_final["username"]
+
+    res_codes = []
+    res_names = []
+    for p_v, k_v, u_v in zip(p_src, k_src, u_src):
+        c_p, n_p = resolve_province_info(p_v, k_v, u_v)
+        res_codes.append(c_p)
+        res_names.append(n_p)
+
+    df_final["kode_provinsi"] = res_codes
+    df_final["nama_provinsi"] = res_names
 
     df_final["skor_mentah"] = (
         pd.to_numeric(df_matrix_school["skor_mentah"], errors="coerce").fillna(0)

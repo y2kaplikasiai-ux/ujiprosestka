@@ -194,20 +194,58 @@ def resolve_province_info(prov_val=None, kd_val=None, username_val=None):
             if k_code in KODE_PROVINSI_MAP:
                 return k_code, KODE_PROVINSI_MAP[k_code]
 
-    # 3. Cek dari username peserta (Pola: P3201... atau 3201001...)
+    # 3. Cek dari username peserta (Sesuai konfirmasi spesifikasi: Kolom 2-3 = Kode Provinsi)
     if username_val is not None and not pd.isna(username_val):
         u_str = str(username_val).strip()
         if u_str.upper() not in ["", "NAN", "NONE", "NULL", "-"]:
-            # Pola A: Diawali huruf prefix (P3201..., US3201..., p-3201...)
+            # Aturan Utama: Kolom 2-3 (index 1:3)
+            if len(u_str) >= 3:
+                cand_k23 = u_str[1:3]
+                if cand_k23 in KODE_PROVINSI_MAP:
+                    return cand_k23, KODE_PROVINSI_MAP[cand_k23]
+            
+            # Pola diawali huruf prefix panjang (misal PESERTA_32...)
             m1 = re.match(r"^[A-Za-z_-]+(\d{2})", u_str)
             if m1 and m1.group(1) in KODE_PROVINSI_MAP:
                 return m1.group(1), KODE_PROVINSI_MAP[m1.group(1)]
-            # Pola B: Diawali langsung 2 digit angka kode provinsi (3201001..., 3120001...)
-            m2 = re.match(r"^(\d{2})", u_str)
-            if m2 and m2.group(1) in KODE_PROVINSI_MAP:
-                return m2.group(1), KODE_PROVINSI_MAP[m2.group(1)]
+            
+            # Fallback jika digit langsung di awal (kolom 1-2)
+            if len(u_str) >= 2:
+                cand_k02 = u_str[:2]
+                if cand_k02 in KODE_PROVINSI_MAP:
+                    return cand_k02, KODE_PROVINSI_MAP[cand_k02]
 
     return None, "TIDAK TERDEFINISI"
+
+
+def extract_region_codes(username_val):
+    """
+    Mengekstrak kode wilayah dari username sesuai konfirmasi spesifikasi:
+    - Kolom 2-3: Kode Provinsi (2 digit)
+    - Kolom 2-5: Kode Rayon / Kab / Kota (4 digit)
+    - Kolom 4-5: Kode Rayon Lokal (2 digit)
+    """
+    if not username_val or pd.isna(username_val):
+        return None, None, None
+    u = str(username_val).strip()
+    kd_prov = None
+    kd_rayon_full = None
+    kd_rayon_local = None
+
+    if len(u) >= 3:
+        if u[1:3] in KODE_PROVINSI_MAP:
+            kd_prov = u[1:3]
+        elif len(u) >= 2 and u[:2] in KODE_PROVINSI_MAP:
+            kd_prov = u[:2]
+
+    if len(u) >= 5:
+        kd_rayon_full = u[1:5]   # Kolom 2-5 (Kode Rayon / Kab / Kota)
+        kd_rayon_local = u[3:5]  # Kolom 4-5 (Kode Rayon Lokal)
+    elif len(u) >= 4 and u[:2] in KODE_PROVINSI_MAP:
+        kd_rayon_full = u[:4]
+        kd_rayon_local = u[2:4]
+
+    return kd_prov, kd_rayon_full, kd_rayon_local
 
 
 def _resolve_province_name(prov_val, kd_val=None, username_val=None):
@@ -283,15 +321,24 @@ def _get_region_df(df_matrix_school, dfs):
     prov_series = df_res[col_prov_src] if col_prov_src else pd.Series([None] * len(df_res), index=df_res.index)
     kd_series = df_res[col_kd_src] if col_kd_src else pd.Series([None] * len(df_res), index=df_res.index)
     u_series = df_res[col_user] if col_user in df_res.columns else df_res["username_clean"]
-    kab_series = df_res[col_kab_src] if col_kab_src else pd.Series(["TIDAK TERDEFINISI"] * len(df_res), index=df_res.index)
+    kab_series = df_res[col_kab_src] if col_kab_src else pd.Series([None] * len(df_res), index=df_res.index)
 
     for p_val, k_val, u_val in zip(prov_series, kd_series, u_series):
         code_p, name_p = resolve_province_info(p_val, k_val, u_val)
         kd_list.append(code_p)
         prov_list.append(name_p)
 
-    for kb_val in kab_series:
-        kab_list.append(_clean_kabupaten_name(kb_val) if pd.notna(kb_val) and str(kb_val).strip() not in ["", "-", "nan", "none", "null"] else "TIDAK TERDEFINISI")
+    for kb_val, u_val in zip(kab_series, u_series):
+        cleaned_kab = _clean_kabupaten_name(kb_val) if pd.notna(kb_val) and str(kb_val).strip() not in ["", "-", "nan", "none", "null", "TIDAK TERDEFINISI"] else None
+        if cleaned_kab:
+            kab_list.append(cleaned_kab)
+        else:
+            # Fallback: jika nama kabupaten belum ada, gunakan kode rayon dari username kolom 2-5
+            _, kd_rayon, _ = extract_region_codes(u_val)
+            if kd_rayon:
+                kab_list.append(f"KAB/KOTA {kd_rayon}")
+            else:
+                kab_list.append("TIDAK TERDEFINISI")
 
     df_res["kode_provinsi"] = kd_list
     df_res["nama_provinsi"] = prov_list

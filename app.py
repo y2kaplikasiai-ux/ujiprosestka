@@ -24,7 +24,12 @@ from validators import validate_7_files
 # Import modul UI dari folder views
 from views.tab_ctt import render_tab_ctt
 from views.tab_irt import render_tab_irt
-from views.tab_region import render_tab_region, resolve_province_info, KODE_PROVINSI_MAP
+from views.tab_region import (
+    render_tab_region,
+    resolve_province_info,
+    extract_region_codes,
+    KODE_PROVINSI_MAP,
+)
 from views.tab_school import render_tab_school
 from views.tab_scoring import render_tab_scoring
 from views.tab_validation import render_tab_validation
@@ -291,17 +296,31 @@ def load_data_from_db():
         )
         prov_norm = []
         kd_norm = []
+        kab_norm = []
+        kd_ray_norm = []
         p_series = df_peserta["nama_provinsi"] if "nama_provinsi" in df_peserta.columns else pd.Series([None] * len(df_peserta))
         k_series = df_peserta["kode_provinsi"] if "kode_provinsi" in df_peserta.columns else pd.Series([None] * len(df_peserta))
+        kb_series = df_peserta["nama_kabupaten"] if "nama_kabupaten" in df_peserta.columns else pd.Series([None] * len(df_peserta))
         u_series = df_peserta[col_u_pes]
 
-        for p_v, k_v, u_v in zip(p_series, k_series, u_series):
+        for p_v, k_v, u_v, kb_v in zip(p_series, k_series, u_series, kb_series):
             c_p, n_p = resolve_province_info(p_v, k_v, u_v)
             kd_norm.append(c_p)
             prov_norm.append(n_p)
+            _, kd_ray, _ = extract_region_codes(u_v)
+            kd_ray_norm.append(kd_ray)
+            kb_str = str(kb_v).strip() if pd.notna(kb_v) else ""
+            if kb_str and kb_str.upper() not in ["", "-", "NAN", "NONE", "NULL", "TIDAK TERDEFINISI"]:
+                kab_norm.append(kb_str)
+            elif kd_ray:
+                kab_norm.append(f"KAB/KOTA {kd_ray}")
+            else:
+                kab_norm.append("TIDAK TERDEFINISI")
 
         df_peserta["nama_provinsi"] = prov_norm
         df_peserta["kode_provinsi"] = kd_norm
+        df_peserta["kode_kabupaten"] = kd_ray_norm
+        df_peserta["nama_kabupaten"] = kab_norm
 
         st.session_state["df_matrix"] = df_peserta
         st.session_state["df_matrix_school"] = df_peserta
@@ -1045,9 +1064,9 @@ if btn_process:
                 kab_cand = df_matrix_school.get("nama_kabupaten_master")
                 if kab_cand is None:
                     kab_cand = df_matrix_school.get("nama_kabupaten_bio")
-                df_matrix_school["nama_kabupaten"] = kab_cand.fillna("-") if kab_cand is not None else "-"
+                raw_kab_init = kab_cand.fillna("-") if kab_cand is not None else pd.Series(["-"] * len(df_matrix_school))
 
-                # 4. Resolusi Akurat Kode & Nama Provinsi (Anti-Salah Wilayah)
+                # 4. Resolusi Akurat Kode & Nama Provinsi (Kolom 2-3) dan Kode Rayon/Kabupaten (Kolom 2-5)
                 prov_cand = df_matrix_school.get("nama_provinsi_master")
                 if prov_cand is None:
                     prov_cand = df_matrix_school.get("nama_provinsi_bio")
@@ -1062,14 +1081,30 @@ if btn_process:
 
                 clean_prov_names = []
                 clean_kd_props = []
-                for p_v, k_v, u_v in zip(raw_prov, raw_kd, raw_user):
+                clean_kd_rayons = []
+                clean_kabs = []
+
+                for p_v, k_v, u_v, kb_v in zip(raw_prov, raw_kd, raw_user, raw_kab_init):
                     c_code, c_name = resolve_province_info(p_v, k_v, u_v)
+                    _, kd_ray, _ = extract_region_codes(u_v)
                     clean_kd_props.append(c_code)
                     clean_prov_names.append(c_name)
+                    clean_kd_rayons.append(kd_ray)
+
+                    # Jika nama kabupaten kosong / '-', fallback ke kode rayon (kolom 2-5)
+                    kb_str = str(kb_v).strip() if pd.notna(kb_v) else ""
+                    if kb_str and kb_str not in ["-", "NAN", "NONE", "NULL", "TIDAK TERDEFINISI"]:
+                        clean_kabs.append(kb_str)
+                    elif kd_ray:
+                        clean_kabs.append(f"KAB/KOTA {kd_ray}")
+                    else:
+                        clean_kabs.append("TIDAK TERDEFINISI")
 
                 df_matrix_school["kd_prop"] = clean_kd_props
                 df_matrix_school["kode_provinsi"] = clean_kd_props
                 df_matrix_school["nama_provinsi"] = clean_prov_names
+                df_matrix_school["kode_kabupaten"] = clean_kd_rayons
+                df_matrix_school["nama_kabupaten"] = clean_kabs
 
                 st.session_state["df_matrix_school"] = df_matrix_school
 
