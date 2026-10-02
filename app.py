@@ -24,14 +24,14 @@ from validators import validate_7_files
 # Import modul UI dari folder views
 from views.tab_ctt import render_tab_ctt
 from views.tab_irt import render_tab_irt
-from views.tab_region import render_tab_region
+from views.tab_region import render_tab_region, resolve_province_info, KODE_PROVINSI_MAP
 from views.tab_school import render_tab_school
 from views.tab_scoring import render_tab_scoring
 from views.tab_validation import render_tab_validation
 
 # 1. Konfigurasi Halaman Streamlit
 st.set_page_config(
-    page_title="Dashboard Analisis Psikometri TKA-011026",
+    page_title="Dashboard Analisis Psikometri TKA",
     page_icon="📊",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -145,7 +145,7 @@ def format_duration(seconds):
 
 # 3. Header Utama Aplikasi
 st.markdown(
-    '<div class="main-header">📊 Dashboard Pengolahan & Analisis Psikometri TKA (v.1)</div>',
+    '<div class="main-header">📊 Dashboard Pengolahan & Analisis Psikometri TKA (v.2)</div>',
     unsafe_allow_html=True,
 )
 st.markdown(
@@ -284,10 +284,29 @@ def load_data_from_db():
             else 0.0
         )
 
-        st.session_state["df_matrix"] = df_peserta
-        st.session_state["df_matrix_school"] = (
-            df_sekolah if df_sekolah is not None and not df_sekolah.empty else df_peserta
+        # Standarisasi dan perbaikan otomatis data provinsi dan kabupaten jika masih berupa kode atau null
+        col_u_pes = next(
+            (c for c in df_peserta.columns if str(c).lower().strip() in ["username", "user_id", "id_peserta"]),
+            df_peserta.columns[0]
         )
+        prov_norm = []
+        kd_norm = []
+        p_series = df_peserta["nama_provinsi"] if "nama_provinsi" in df_peserta.columns else pd.Series([None] * len(df_peserta))
+        k_series = df_peserta["kode_provinsi"] if "kode_provinsi" in df_peserta.columns else pd.Series([None] * len(df_peserta))
+        u_series = df_peserta[col_u_pes]
+
+        for p_v, k_v, u_v in zip(p_series, k_series, u_series):
+            c_p, n_p = resolve_province_info(p_v, k_v, u_v)
+            kd_norm.append(c_p)
+            prov_norm.append(n_p)
+
+        df_peserta["nama_provinsi"] = prov_norm
+        df_peserta["kode_provinsi"] = kd_norm
+
+        st.session_state["df_matrix"] = df_peserta
+        st.session_state["df_matrix_school"] = df_peserta
+        if df_sekolah is not None and not df_sekolah.empty:
+            st.session_state["df_sekolah_agregasi"] = df_sekolah
         st.session_state["val_result"] = {
             "status": True,
             "dataframes": {
@@ -837,7 +856,59 @@ if btn_process:
                 t5_start = time.time()
                 progress_bar.progress(85)
 
-                df_matrix_school = pd.DataFrame()
+                df_matrix_school = df_matrix.copy()
+                usr_user_col = "username" if "username" in df_matrix.columns else df_matrix.columns[0]
+                df_matrix_school["_school_key"] = (
+                    df_matrix_school[usr_user_col]
+                    .astype(str)
+                    .str.strip()
+                    .str[:9]
+                    .str.upper()
+                )
+
+                # 1. Integrasi Master Biodata Siswa jika tersedia
+                if (
+                    "biodata" in dfs
+                    and dfs["biodata"] is not None
+                    and not dfs["biodata"].empty
+                ):
+                    try:
+                        df_bio = dfs["biodata"].copy()
+                        df_bio.columns = [str(c).strip().lower() for c in df_bio.columns]
+                        col_u_bio = next(
+                            (c for c in df_bio.columns if str(c) in ["username", "usernames", "id_peserta", "idpeserta", "nisn", "id"]),
+                            df_bio.columns[0]
+                        )
+                        df_bio["_u_clean"] = df_bio[col_u_bio].astype(str).str.strip().str.lower()
+                        
+                        col_sek_bio = next((c for c in df_bio.columns if "sekolah" in c), None)
+                        col_kab_bio = next((c for c in df_bio.columns if "kabupaten" in c or "kota" in c), None)
+                        col_prov_bio = next((c for c in df_bio.columns if "provinsi" in c or "propinsi" in c or "prov" in c), None)
+                        col_kd_bio = next((c for c in df_bio.columns if "kd_prop" in c or "kode_prov" in c), None)
+
+                        bio_keep = ["_u_clean"]
+                        bio_ren = {}
+                        if col_sek_bio:
+                            bio_keep.append(col_sek_bio)
+                            bio_ren[col_sek_bio] = "nama_sekolah_bio"
+                        if col_kab_bio:
+                            bio_keep.append(col_kab_bio)
+                            bio_ren[col_kab_bio] = "nama_kabupaten_bio"
+                        if col_prov_bio:
+                            bio_keep.append(col_prov_bio)
+                            bio_ren[col_prov_bio] = "nama_provinsi_bio"
+                        if col_kd_bio:
+                            bio_keep.append(col_kd_bio)
+                            bio_ren[col_kd_bio] = "kd_prop_bio"
+
+                        df_bio_clean = df_bio[bio_keep].drop_duplicates(subset=["_u_clean"]).rename(columns=bio_ren)
+                        df_matrix_school["_u_clean"] = df_matrix_school[usr_user_col].astype(str).str.strip().str.lower()
+                        df_matrix_school = df_matrix_school.merge(df_bio_clean, on="_u_clean", how="left")
+                        df_matrix_school = df_matrix_school.drop(columns=["_u_clean"], errors="ignore")
+                    except Exception:
+                        pass
+
+                # 2. Integrasi Master Sekolah jika tersedia
                 if (
                     "sekolah" in dfs
                     and dfs["sekolah"] is not None
@@ -860,6 +931,7 @@ if btn_process:
                                     "kd_sekolah",
                                     "id_sekolah",
                                     "kd_sek",
+                                    "npsn",
                                 ]
                             ),
                             df_sek.columns[0],
@@ -955,61 +1027,49 @@ if btn_process:
                             rename_map[col_nama_prov] = "nama_provinsi_master"
                         df_sek_clean.rename(columns=rename_map, inplace=True)
 
-                        usr_user_col = "username" if "username" in df_matrix.columns else df_matrix.columns[0]
-
-                        df_matrix_school = df_matrix.copy()
-                        df_matrix_school["_school_key"] = (
-                            df_matrix_school[usr_user_col]
-                            .astype(str)
-                            .str.strip()
-                            .str[:9]
-                            .str.upper()
-                        )
-                        df_matrix_school["_prop_key_user"] = (
-                            df_matrix_school[usr_user_col]
-                            .astype(str)
-                            .str.strip()
-                            .str[1:3]
-                        )
-
                         df_matrix_school = df_matrix_school.merge(
                             df_sek_clean, on="_school_key", how="left"
                         )
 
-                        df_matrix_school["nama_sekolah"] = df_matrix_school[
-                            "nama_sekolah_master"
-                        ].fillna(df_matrix_school["_school_key"])
-                        df_matrix_school["nama_kabupaten"] = df_matrix_school[
-                            "nama_kabupaten_master"
-                        ].fillna("-")
-                        df_matrix_school["kd_prop"] = df_matrix_school[
-                            "kd_prop_master"
-                        ].fillna(df_matrix_school["_prop_key_user"])
-                        df_matrix_school["nama_provinsi"] = df_matrix_school[
-                            "nama_provinsi_master"
-                        ].fillna(df_matrix_school["kd_prop"])
-
-                        df_matrix_school["kd_prop"] = (
-                            df_matrix_school["kd_prop"]
-                            .astype(str)
-                            .str.strip()
-                            .str.replace(".0", "", regex=False)
-                            .str.rstrip(",")
-                            .str.zfill(2)
-                        )
-                        df_matrix_school["nama_provinsi"] = (
-                            df_matrix_school["nama_provinsi"]
-                            .astype(str)
-                            .str.strip()
-                            .str.rstrip(",")
-                            .str.strip()
-                            .str.upper()
-                        )
-
                     except Exception as e:
                         st.warning(
-                            f"Catatan: Pemrosesan data sekolah/provinsi mengalami kendala: {e}"
+                            f"Catatan: Pemrosesan data master sekolah mengalami kendala: {e}"
                         )
+
+                # 3. Konsolidasi Data Nama Sekolah & Kabupaten
+                sek_cand = df_matrix_school.get("nama_sekolah_master")
+                if sek_cand is None:
+                    sek_cand = df_matrix_school.get("nama_sekolah_bio")
+                df_matrix_school["nama_sekolah"] = sek_cand.fillna(df_matrix_school["_school_key"]) if sek_cand is not None else df_matrix_school["_school_key"]
+
+                kab_cand = df_matrix_school.get("nama_kabupaten_master")
+                if kab_cand is None:
+                    kab_cand = df_matrix_school.get("nama_kabupaten_bio")
+                df_matrix_school["nama_kabupaten"] = kab_cand.fillna("-") if kab_cand is not None else "-"
+
+                # 4. Resolusi Akurat Kode & Nama Provinsi (Anti-Salah Wilayah)
+                prov_cand = df_matrix_school.get("nama_provinsi_master")
+                if prov_cand is None:
+                    prov_cand = df_matrix_school.get("nama_provinsi_bio")
+                
+                kd_cand = df_matrix_school.get("kd_prop_master")
+                if kd_cand is None:
+                    kd_cand = df_matrix_school.get("kd_prop_bio")
+
+                raw_prov = prov_cand if prov_cand is not None else pd.Series([None] * len(df_matrix_school))
+                raw_kd = kd_cand if kd_cand is not None else pd.Series([None] * len(df_matrix_school))
+                raw_user = df_matrix_school[usr_user_col]
+
+                clean_prov_names = []
+                clean_kd_props = []
+                for p_v, k_v, u_v in zip(raw_prov, raw_kd, raw_user):
+                    c_code, c_name = resolve_province_info(p_v, k_v, u_v)
+                    clean_kd_props.append(c_code)
+                    clean_prov_names.append(c_name)
+
+                df_matrix_school["kd_prop"] = clean_kd_props
+                df_matrix_school["kode_provinsi"] = clean_kd_props
+                df_matrix_school["nama_provinsi"] = clean_prov_names
 
                 st.session_state["df_matrix_school"] = df_matrix_school
 

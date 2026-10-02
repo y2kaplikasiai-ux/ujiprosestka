@@ -59,12 +59,16 @@ def _clean_province_name(name_str):
         return "TIDAK TERDEFINISI"
 
     val = str(name_str).strip().upper()
+    if val in ["", "NAN", "NONE", "NULL", "-", "TIDAK TERDEFINISI"]:
+        return "TIDAK TERDEFINISI"
+
     val = re.sub(
         r"^(PROVINSI|PROPINSI|PROV\.|PROV|DAERAH KHUSUS IBUKOTA|DAERAH ISTIMEWA)\s+",
         "",
         val,
     )
-    val = re.sub(r"[^A-Z0-9\s]", "", val).strip()
+    val = re.sub(r"[^A-Z0-9\s]", " ", val)
+    val = re.sub(r"\s+", " ", val).strip()
 
     alias_map = {
         "D I YOGYAKARTA": "DI YOGYAKARTA",
@@ -74,15 +78,19 @@ def _clean_province_name(name_str):
         "DAERAH ISTIMEWA YOGYAKARTA": "DI YOGYAKARTA",
         "DKI": "DKI JAKARTA",
         "JAKARTA": "DKI JAKARTA",
-        "DKI JAKARTA": "DKI JAKARTA",
         "JAKARTA RAYA": "DKI JAKARTA",
         "KEP BANGKA BELITUNG": "KEPULAUAN BANGKA BELITUNG",
         "BANGKA BELITUNG": "KEPULAUAN BANGKA BELITUNG",
+        "BANGKABELITUNG": "KEPULAUAN BANGKA BELITUNG",
         "KEP RIAU": "KEPULAUAN RIAU",
         "NTB": "NUSA TENGGARA BARAT",
         "NTT": "NUSA TENGGARA TIMUR",
         "IRIAN JAYA BARAT": "PAPUA BARAT",
         "IRIAN JAYA TIMUR": "PAPUA",
+        "PAPUA BARAT DAYA": "PAPUA BARAT",
+        "PAPUA SELATAN": "PAPUA",
+        "PAPUA TENGAH": "PAPUA",
+        "PAPUA PEGUNUNGAN": "PAPUA",
     }
     return alias_map.get(val, val)
 
@@ -92,14 +100,30 @@ def _clean_kabupaten_name(name_str):
     if not name_str or pd.isna(name_str):
         return "TIDAK TERDEFINISI"
     val = str(name_str).strip().upper()
+    if val in ["", "NAN", "NONE", "NULL", "-", "TIDAK TERDEFINISI"]:
+        return "TIDAK TERDEFINISI"
     val = re.sub(r"^(KABUPATEN|KAB\.|KAB|KOTA ADMINISTRASI|KOTA)\s+", "", val)
-    val = re.sub(r"[^A-Z0-9\s]", "", val).strip()
-    return val
+    val = re.sub(r"[^A-Z0-9\s]", " ", val)
+    val = re.sub(r"\s+", " ", val).strip()
+    return val if val else "TIDAK TERDEFINISI"
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def _load_geojson_indonesia():
-    """Memuat GeoJSON Wilayah Provinsi Indonesia dengan multi-URL fallback."""
+    """Memuat GeoJSON Wilayah Provinsi Indonesia dengan offline fallback lokal."""
+    # 1. Coba baca dari file lokal data/indonesia_prov.geojson
+    try:
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        local_path = os.path.join(base_dir, "data", "indonesia_prov.geojson")
+        if os.path.exists(local_path):
+            with open(local_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if data and "features" in data:
+                    return data
+    except Exception:
+        pass
+
+    # 2. Fallback remote URLs
     urls = [
         "https://raw.githubusercontent.com/superpikar/indonesia-geojson/master/indonesia-province-simple.json",
         "https://raw.githubusercontent.com/ans-4175/indonesia-geojson/master/indonesia-province.geojson",
@@ -110,7 +134,7 @@ def _load_geojson_indonesia():
             req = urllib.request.Request(
                 url, headers={"User-Agent": "Mozilla/5.0"}
             )
-            with urllib.request.urlopen(req, timeout=10) as response:
+            with urllib.request.urlopen(req, timeout=5) as response:
                 data = json.loads(response.read().decode())
                 if data and "features" in data:
                     return data
@@ -131,7 +155,7 @@ def _load_geojson_kabupaten():
             req = urllib.request.Request(
                 url, headers={"User-Agent": "Mozilla/5.0"}
             )
-            with urllib.request.urlopen(req, timeout=10) as response:
+            with urllib.request.urlopen(req, timeout=5) as response:
                 data = json.loads(response.read().decode())
                 if data and "features" in data:
                     return data
@@ -140,43 +164,138 @@ def _load_geojson_kabupaten():
     return None
 
 
+REV_KODE_PROVINSI_MAP = {v: k for k, v in KODE_PROVINSI_MAP.items()}
+
+
+def resolve_province_info(prov_val=None, kd_val=None, username_val=None):
+    """
+    Mengonversi berbagai representasi provinsi (nama, kode BPS, atau username)
+    menjadi tuple terstandar: (kode_provinsi_2digit, nama_provinsi_standard).
+    """
+    # 1. Cek dari nama_provinsi
+    if prov_val is not None and not pd.isna(prov_val):
+        p_str = str(prov_val).strip()
+        if p_str.upper() not in ["", "NAN", "NONE", "NULL", "-", "TIDAK TERDEFINISI"]:
+            # Jika p_str berupa kode angka BPS misal "32" atau "32.0"
+            cand_code = p_str.replace(".0", "").strip().zfill(2)
+            if cand_code in KODE_PROVINSI_MAP:
+                return cand_code, KODE_PROVINSI_MAP[cand_code]
+            
+            cleaned = _clean_province_name(p_str)
+            if cleaned not in ["TIDAK TERDEFINISI", "", "NAN", "NONE", "NULL"] and not cleaned.isdigit():
+                code_found = REV_KODE_PROVINSI_MAP.get(cleaned)
+                return code_found, cleaned
+
+    # 2. Cek dari kode_provinsi / kd_prop
+    if kd_val is not None and not pd.isna(kd_val):
+        k_str = str(kd_val).strip().replace(".0", "")
+        if k_str.upper() not in ["", "NAN", "NONE", "NULL", "-"]:
+            k_code = k_str.zfill(2)
+            if k_code in KODE_PROVINSI_MAP:
+                return k_code, KODE_PROVINSI_MAP[k_code]
+
+    # 3. Cek dari username peserta (Pola: P3201... atau 3201001...)
+    if username_val is not None and not pd.isna(username_val):
+        u_str = str(username_val).strip()
+        if u_str.upper() not in ["", "NAN", "NONE", "NULL", "-"]:
+            # Pola A: Diawali huruf prefix (P3201..., US3201..., p-3201...)
+            m1 = re.match(r"^[A-Za-z_-]+(\d{2})", u_str)
+            if m1 and m1.group(1) in KODE_PROVINSI_MAP:
+                return m1.group(1), KODE_PROVINSI_MAP[m1.group(1)]
+            # Pola B: Diawali langsung 2 digit angka kode provinsi (3201001..., 3120001...)
+            m2 = re.match(r"^(\d{2})", u_str)
+            if m2 and m2.group(1) in KODE_PROVINSI_MAP:
+                return m2.group(1), KODE_PROVINSI_MAP[m2.group(1)]
+
+    return None, "TIDAK TERDEFINISI"
+
+
+def _resolve_province_name(prov_val, kd_val=None, username_val=None):
+    """Fungsi helper mengembalikan hanya nama provinsi standar."""
+    return resolve_province_info(prov_val, kd_val, username_val)[1]
+
+
 def _get_region_df(df_matrix_school, dfs):
-    """Mengekstrak dan mencocokkan DataFrame Peserta dengan data Wilayah (sinkron ke df_matrix / N=276.030)."""
-    df_base = st.session_state.get("df_matrix")
-    if df_base is None or df_base.empty:
+    """Mengekstrak dan mencocokkan DataFrame Peserta dengan data Wilayah secara konsisten."""
+    df_base = None
+    if df_matrix_school is not None and not df_matrix_school.empty:
         df_base = df_matrix_school
-    if (df_base is None or df_base.empty) and isinstance(dfs, dict) and "respon" in dfs:
+    elif st.session_state.get("df_matrix") is not None and not st.session_state["df_matrix"].empty:
+        df_base = st.session_state["df_matrix"]
+    elif isinstance(dfs, dict) and "respon" in dfs:
         df_base = dfs["respon"]
-        
+
     if df_base is None or df_base.empty:
         return pd.DataFrame()
 
     df_res = df_base.copy()
-    col_user = next((c for c in df_res.columns if str(c).lower().strip() in ["username", "user_id", "id_peserta", "id"]), df_res.columns[0])
+    col_user = next(
+        (c for c in df_res.columns if str(c).lower().strip() in ["username", "user_id", "id_peserta", "id"]),
+        df_res.columns[0]
+    )
     df_res["username_clean"] = df_res[col_user].astype(str).str.strip().str.lower()
     df_res = df_res[df_res["username_clean"] != "nan"].drop_duplicates("username_clean").copy()
-    
-    # Ambil metadata wilayah dari DB sebagai referensi left-join (tanpa mengubah N master)
-    try:
-        engine = get_db_connection()
-        if engine:
-            df_meta = pd.read_sql("SELECT username, nama_provinsi, nama_kabupaten FROM tb_peserta_skor WHERE username IS NOT NULL AND username != ''", engine)
-            if not df_meta.empty:
-                df_meta["username_clean"] = df_meta["username"].astype(str).str.strip().str.lower()
-                df_meta["nama_provinsi"] = df_meta["nama_provinsi"].fillna("TIDAK TERDEFINISI").apply(_clean_province_name)
-                df_meta["nama_kabupaten"] = df_meta["nama_kabupaten"].fillna("TIDAK TERDEFINISI").apply(_clean_kabupaten_name)
-                df_res = df_res.merge(df_meta[["username_clean", "nama_provinsi", "nama_kabupaten"]].drop_duplicates("username_clean"), on="username_clean", how="left")
-                df_res["nama_provinsi"] = df_res["nama_provinsi"].fillna("TIDAK TERDEFINISI")
-                df_res["nama_kabupaten"] = df_res["nama_kabupaten"].fillna("TIDAK TERDEFINISI")
-                return df_res
-    except Exception:
-        pass
-    
-    col_prov = next((c for c in df_res.columns if str(c).lower().strip() in ["nama_provinsi", "provinsi", "prov", "kd_prop", "kode_provinsi"]), None)
-    col_kab = next((c for c in df_res.columns if str(c).lower().strip() in ["nama_kabupaten", "kabupaten", "kota", "nama_kota"]), None)
-    
-    df_res["nama_provinsi"] = df_res[col_prov].apply(lambda x: _clean_province_name(KODE_PROVINSI_MAP.get(str(x).strip().upper(), str(x)))) if col_prov else "TIDAK TERDEFINISI"
-    df_res["nama_kabupaten"] = df_res[col_kab].apply(_clean_kabupaten_name) if col_kab else "TIDAK TERDEFINISI"
+
+    # Cek apakah kolom wilayah sudah ada dan valid di df_res
+    has_prov = "nama_provinsi" in df_res.columns and (
+        df_res["nama_provinsi"].notna()
+        & (df_res["nama_provinsi"].astype(str).str.strip().str.upper() != "TIDAK TERDEFINISI")
+        & (df_res["nama_provinsi"].astype(str).str.strip() != "")
+    ).any()
+    has_kab = "nama_kabupaten" in df_res.columns and (
+        df_res["nama_kabupaten"].notna()
+        & (df_res["nama_kabupaten"].astype(str).str.strip().str.upper() != "TIDAK TERDEFINISI")
+        & (df_res["nama_kabupaten"].astype(str).str.strip() != "")
+    ).any()
+
+    # Jika belum lengkap di df_res, coba ambil metadata wilayah dari DB MySQL
+    if not (has_prov and has_kab):
+        try:
+            engine = get_db_connection()
+            if engine:
+                df_meta = pd.read_sql(
+                    "SELECT username, nama_provinsi, nama_kabupaten, kode_provinsi FROM tb_peserta_skor WHERE username IS NOT NULL AND username != ''",
+                    engine,
+                )
+                if not df_meta.empty:
+                    df_meta["username_clean"] = df_meta["username"].astype(str).str.strip().str.lower()
+                    # Hapus kolom yang berpotensi collision sebelum merge
+                    for c_drop in ["nama_provinsi", "nama_kabupaten", "kode_provinsi"]:
+                        if c_drop in df_res.columns:
+                            df_res = df_res.drop(columns=[c_drop])
+                    df_res = df_res.merge(
+                        df_meta.drop(columns=["username"]).drop_duplicates("username_clean"),
+                        on="username_clean",
+                        how="left",
+                    )
+        except Exception:
+            pass
+
+    # Normalisasi Nama Provinsi dan Kabupaten dengan logika berlapis
+    col_prov_src = next((c for c in df_res.columns if str(c).lower().strip() in ["nama_provinsi", "provinsi", "prov"]), None)
+    col_kd_src = next((c for c in df_res.columns if str(c).lower().strip() in ["kode_provinsi", "kd_prop", "kode_prop", "kd_prov"]), None)
+    col_kab_src = next((c for c in df_res.columns if str(c).lower().strip() in ["nama_kabupaten", "kabupaten", "kota", "nama_kota"]), None)
+
+    prov_list = []
+    kd_list = []
+    kab_list = []
+
+    prov_series = df_res[col_prov_src] if col_prov_src else pd.Series([None] * len(df_res), index=df_res.index)
+    kd_series = df_res[col_kd_src] if col_kd_src else pd.Series([None] * len(df_res), index=df_res.index)
+    u_series = df_res[col_user] if col_user in df_res.columns else df_res["username_clean"]
+    kab_series = df_res[col_kab_src] if col_kab_src else pd.Series(["TIDAK TERDEFINISI"] * len(df_res), index=df_res.index)
+
+    for p_val, k_val, u_val in zip(prov_series, kd_series, u_series):
+        code_p, name_p = resolve_province_info(p_val, k_val, u_val)
+        kd_list.append(code_p)
+        prov_list.append(name_p)
+
+    for kb_val in kab_series:
+        kab_list.append(_clean_kabupaten_name(kb_val) if pd.notna(kb_val) and str(kb_val).strip() not in ["", "-", "nan", "none", "null"] else "TIDAK TERDEFINISI")
+
+    df_res["kode_provinsi"] = kd_list
+    df_res["nama_provinsi"] = prov_list
+    df_res["nama_kabupaten"] = kab_list
     return df_res
 
 
@@ -231,117 +350,60 @@ def render_tab_region(df_matrix_school, dfs):
 
     score_columns_map = {}
 
+    # 1. Klasik / CTT (Skala 0-100)
+    # Sumber A: skor_konversi_ctt langsung yang tersimpan di dataframe
+    if "skor_konversi_ctt" in df_base.columns and df_base["skor_konversi_ctt"].notna().any():
+        df_temp = pd.DataFrame()
+        df_temp["username_clean"] = df_base["username_clean"]
+        df_temp["Klasik / CTT (Skala 0-100)"] = pd.to_numeric(df_base["skor_konversi_ctt"], errors="coerce")
+        score_columns_map["Klasik / CTT (Skala 0-100)"] = df_temp.drop_duplicates("username_clean")
+    elif "skor_mentah" in df_base.columns:
+        vals = pd.to_numeric(df_base["skor_mentah"], errors="coerce")
+        n_soal = 1.0
+        if "Jumlah_Soal" in df_base.columns:
+            n_soal_cand = pd.to_numeric(df_base["Jumlah_Soal"], errors="coerce").max()
+            if pd.notna(n_soal_cand) and n_soal_cand > 0:
+                n_soal = n_soal_cand
+        elif not vals.dropna().empty and vals.max() > 0:
+            n_soal = vals.max()
+        df_temp = pd.DataFrame()
+        df_temp["username_clean"] = df_base["username_clean"]
+        df_temp["Klasik / CTT (Skala 0-100)"] = ((vals / n_soal) * 100.0).round(2)
+        score_columns_map["Klasik / CTT (Skala 0-100)"] = df_temp.drop_duplicates("username_clean")
+
+    # 2. Model IRT (Rasch, 1PL, 2PL, 3PL)
     irt_results = st.session_state.get("irt_results", {})
-    for m_key, m_val in irt_results.items():
-        if (
-            isinstance(m_val, dict)
-            and "df_person" in m_val
-            and not m_val["df_person"].empty
-        ):
-            df_p = m_val["df_person"].copy()
-            u_col = next(
-                (
-                    c
-                    for c in df_p.columns
-                    if str(c).lower().strip() in ["username", "user_id", "id"]
-                ),
-                df_p.columns[0],
-            )
-            df_p["username_clean"] = (
-                df_p[u_col].astype(str).str.strip().str.lower()
-            )
-
-            s_col = next(
-                (
-                    c
-                    for c in df_p.columns
-                    if str(c).lower().strip()
-                    in [
-                        "nilai konversi",
-                        "nilai_konversi",
-                        "skor_konversi",
-                        "nilai_scaled",
-                        "scaled_score",
-                        "skor_scaled",
-                    ]
-                ),
-                None,
-            )
-
-            if not s_col:
-                num_cols = df_p.select_dtypes(include=[np.number]).columns
-                for nc in num_cols:
-                    if str(nc).lower().strip() not in [
-                        "theta",
-                        "ability",
-                        "se",
-                        "se_theta",
-                        "se_ability",
-                        "z_score",
-                    ]:
-                        if df_p[nc].max() > 10 or df_p[nc].min() < -5:
-                            s_col = nc
-                            break
-
-            if s_col:
-                label_name = f"IRT {m_key.upper()} (Skala Konversi)"
-                score_columns_map[label_name] = (
-                    df_p[["username_clean", s_col]]
-                    .rename(columns={s_col: label_name})
-                    .drop_duplicates("username_clean")
-                )
-
-    for c in df_base.columns:
-        c_str = str(c).lower().strip()
-        if "theta" in c_str or "ability" in c_str:
-            continue
-
-        if (
-            "skor_konversi" in c_str
-            or "nilai_konversi" in c_str
-            or "nilai_scaled" in c_str
-        ):
-            name_label = f"Konversi ({c.replace('_', ' ').upper()})"
+    for m_key in ["rasch", "1pl", "2pl", "3pl"]:
+        label_name = f"IRT {m_key.upper()} (Skala Konversi)"
+        col_db = f"skor_konversi_{m_key}"
+        
+        # Coba ambil dari df_base terlebih dahulu (jika dari database/cache)
+        if col_db in df_base.columns and df_base[col_db].notna().any():
             df_temp = pd.DataFrame()
             df_temp["username_clean"] = df_base["username_clean"]
-            df_temp[name_label] = pd.to_numeric(df_base[c], errors="coerce")
-            score_columns_map[name_label] = df_temp.drop_duplicates(
-                "username_clean"
-            )
-        elif (
-            "skor_mentah" in c_str
-            or "nilai" in c_str
-            and not any(
-                k in score_columns_map for k in ["Klasik / CTT (Skala 0-100)"]
-            )
-        ):
-            vals = pd.to_numeric(df_base[c], errors="coerce")
-            max_val_found = vals.max() if not vals.empty else 25.0
-            if max_val_found <= 50 and max_val_found > 0:
-                name_label = "Klasik / CTT (Skala 0-100)"
-                df_temp = pd.DataFrame()
-                df_temp["username_clean"] = df_base["username_clean"]
-                df_temp[name_label] = (vals / max_val_found) * 100.0
-                score_columns_map[name_label] = df_temp.drop_duplicates(
-                    "username_clean"
-                )
-
-    if "Klasik / CTT (Skala 0-100)" not in score_columns_map:
-        for c in df_base.columns:
-            if "skor" in str(c).lower() or "nilai" in str(c).lower():
-                vals = pd.to_numeric(df_base[c], errors="coerce")
-                if not vals.dropna().empty:
-                    m_val = vals.max()
-                    name_label = "Klasik / CTT (Skala 0-100)"
-                    df_temp = pd.DataFrame()
-                    df_temp["username_clean"] = df_base["username_clean"]
-                    df_temp[name_label] = (
-                        (vals / m_val) * 100.0 if m_val > 0 else vals
+            df_temp[label_name] = pd.to_numeric(df_base[col_db], errors="coerce")
+            score_columns_map[label_name] = df_temp.drop_duplicates("username_clean")
+        # Fallback: ambil dari irt_results session_state
+        elif m_key in irt_results and isinstance(irt_results[m_key], dict):
+            df_p = irt_results[m_key].get("df_person")
+            if df_p is not None and not df_p.empty:
+                df_p = df_p.copy()
+                u_col = next((c for c in df_p.columns if str(c).lower().strip() in ["username", "user_id", "id"]), df_p.columns[0])
+                df_p["username_clean"] = df_p[u_col].astype(str).str.strip().str.lower()
+                s_col = next((c for c in df_p.columns if str(c).lower().strip() in ["nilai konversi", "nilai_konversi", "skor_konversi", "nilai_scaled", "scaled_score", "skor_scaled"]), None)
+                if not s_col:
+                    num_cols = df_p.select_dtypes(include=[np.number]).columns
+                    for nc in num_cols:
+                        if str(nc).lower().strip() not in ["theta", "ability", "se", "se_theta", "se_ability", "z_score"]:
+                            if df_p[nc].max() > 10 or df_p[nc].min() < -5:
+                                s_col = nc
+                                break
+                if s_col:
+                    score_columns_map[label_name] = (
+                        df_p[["username_clean", s_col]]
+                        .rename(columns={s_col: label_name})
+                        .drop_duplicates("username_clean")
                     )
-                    score_columns_map[name_label] = df_temp.drop_duplicates(
-                        "username_clean"
-                    )
-                    break
 
     if not score_columns_map:
         st.info(
@@ -356,15 +418,21 @@ def render_tab_region(df_matrix_school, dfs):
             list(score_columns_map.keys()),
             key=lambda x: 0 if "KLASIK" in x.upper() or "CTT" in x.upper() else 1,
         )
+        prev_idx = 0
+        if "selected_region_score_label" in st.session_state and st.session_state["selected_region_score_label"] in sorted_opt_keys:
+            prev_idx = sorted_opt_keys.index(st.session_state["selected_region_score_label"])
+
         selected_score_label = st.selectbox(
             "🎯 Pilih Metode Skor Konversi:",
             options=sorted_opt_keys,
-            index=0,
+            index=prev_idx,
+            key="tab6_score_dropdown",
             help=(
                 "Pilih model nilai konversi (skala 0-100) yang akan dianalisis"
                 " distribusinya secara geografis."
             ),
         )
+        st.session_state["selected_region_score_label"] = selected_score_label
 
     df_score_selected = score_columns_map[selected_score_label].copy()
     val_col_name = selected_score_label
@@ -420,7 +488,10 @@ def render_tab_region(df_matrix_school, dfs):
 
     st.markdown("### 🗺️ 2. Peta Interaktif Sebaran Nilai (Provinsi & Kabupaten)")
 
-    prov_list = sorted(list(df_merged["nama_provinsi"].unique()))
+    prov_list = sorted([
+        p for p in df_merged["nama_provinsi"].unique()
+        if p and p != "TIDAK TERDEFINISI" and not str(p).isdigit() and str(p).lower() != "nan"
+    ])
     col_nav1, col_nav2 = st.columns(2)
 
     with col_nav1:
@@ -480,69 +551,89 @@ def render_tab_region(df_matrix_school, dfs):
                 _clean_province_name
             )
 
-            valid_scores = stats_prov["Rata_Rata"].dropna()
-            min_val = (
-                float(valid_scores.min()) if not valid_scores.empty else 0.0
-            )
-            max_val = (
-                float(valid_scores.max()) if not valid_scores.empty else 100.0
-            )
-            if max_val - min_val < 0.01:
-                min_val -= 1.0
-                max_val += 1.0
+            # Filter hanya provinsi yang valid dan cocok dengan GeoJSON
+            valid_prov_features = {
+                f["properties"].get("norm_name")
+                for f in geojson_id.get("features", [])
+                if f.get("properties", {}).get("norm_name")
+            }
+            stats_prov_map = stats_prov[
+                stats_prov["Provinsi_Clean"].isin(valid_prov_features)
+            ].copy()
 
-            fig_map = px.choropleth(
-                stats_prov,
-                geojson=geojson_id,
-                locations="Provinsi_Clean",
-                featureidkey="properties.norm_name",
-                color="Rata_Rata",
-                color_continuous_scale=custom_red_to_blue,
-                range_color=(min_val, max_val),
-                labels={
-                    "Rata_Rata": "Rata-Rata Skor",
-                    "Provinsi_Clean": "Provinsi",
-                },
-                hover_data={
-                    "Jumlah_Peserta": ":,.0f",
-                    "Rata_Rata": ":.2f",
-                    "Min": ":.2f",
-                    "Max": ":.2f",
-                },
-                title=(
-                    f"<b>Peta Wilayah Nilai {selected_score_label} per"
-                    " Provinsi</b>"
-                ),
-            )
+            if not stats_prov_map.empty:
+                valid_scores = stats_prov_map["Rata_Rata"].dropna()
+                min_val = (
+                    float(valid_scores.min()) if not valid_scores.empty else 0.0
+                )
+                max_val = (
+                    float(valid_scores.max()) if not valid_scores.empty else 100.0
+                )
+                if max_val - min_val < 0.01:
+                    min_val -= 1.0
+                    max_val += 1.0
 
-            fig_map.update_traces(
-                marker_line_color="#ffffff", marker_line_width=1.8
-            )
+                fig_map = px.choropleth(
+                    stats_prov_map,
+                    geojson=geojson_id,
+                    locations="Provinsi_Clean",
+                    featureidkey="properties.norm_name",
+                    color="Rata_Rata",
+                    color_continuous_scale=custom_red_to_blue,
+                    range_color=(min_val, max_val),
+                    labels={
+                        "Rata_Rata": "Rata-Rata Skor",
+                        "Provinsi_Clean": "Provinsi",
+                    },
+                    hover_data={
+                        "Jumlah_Peserta": ":,.0f",
+                        "Rata_Rata": ":.2f",
+                        "Min": ":.2f",
+                        "Max": ":.2f",
+                    },
+                    title=(
+                        f"<b>Peta Wilayah Nilai {selected_score_label} per"
+                        " Provinsi</b>"
+                    ),
+                )
 
-            fig_map.update_geos(
-                fitbounds="locations",
-                visible=False,
-                showcoastlines=True,
-                coastlinecolor="#ffffff",
-                coastlinewidth=1.2,
-                showsubunits=True,
-                subunitcolor="#ffffff",
-                subunitwidth=1.8,
-                showland=True,
-                landcolor="#1c212c",
-                showocean=True,
-                oceancolor="#0e1117",
-            )
+                fig_map.update_traces(
+                    marker_line_color="#ffffff", marker_line_width=1.8
+                )
 
-            fig_map.update_layout(
-                margin={"r": 0, "t": 40, "l": 0, "b": 0},
-                paper_bgcolor="#0e1117",
-                plot_bgcolor="#0e1117",
-                font_color="#ffffff",
-                height=550,
-            )
+                fig_map.update_geos(
+                    fitbounds="locations",
+                    visible=False,
+                    showcoastlines=True,
+                    coastlinecolor="#ffffff",
+                    coastlinewidth=1.2,
+                    showsubunits=True,
+                    subunitcolor="#ffffff",
+                    subunitwidth=1.8,
+                    showland=True,
+                    landcolor="#1c212c",
+                    showocean=True,
+                    oceancolor="#0e1117",
+                )
 
-            st.plotly_chart(fig_map, use_container_width=True)
+                fig_map.update_layout(
+                    margin={"r": 0, "t": 40, "l": 0, "b": 0},
+                    paper_bgcolor="#0e1117",
+                    plot_bgcolor="#0e1117",
+                    font_color="#ffffff",
+                    height=550,
+                )
+
+                st.plotly_chart(fig_map, use_container_width=True)
+
+                unmapped_mask = ~stats_prov["Provinsi_Clean"].isin(valid_prov_features)
+                if unmapped_mask.any():
+                    n_unmapped = stats_prov.loc[unmapped_mask, "Jumlah_Peserta"].sum()
+                    st.caption(
+                        f"ℹ️ Catatan: Terdapat {int(n_unmapped):,} peserta dengan informasi wilayah belum dapat dipetakan secara geografis."
+                    )
+            else:
+                st.warning("⚠️ Tidak ada data provinsi yang cocok dengan batas peta GeoJSON.")
         else:
             st.warning(
                 "⚠️ Gagal memuat data GeoJSON batas provinsi Indonesia."
@@ -586,66 +677,81 @@ def render_tab_region(df_matrix_school, dfs):
                 "nama_kabupaten"
             ].apply(_clean_kabupaten_name)
 
-            v_scores = stats_kab_local["Rata_Rata"].dropna()
-            min_k = float(v_scores.min()) if not v_scores.empty else 0.0
-            max_k = float(v_scores.max()) if not v_scores.empty else 100.0
+            valid_kab_features = {
+                f["properties"].get("norm_kab")
+                for f in geojson_kab.get("features", [])
+                if f.get("properties", {}).get("norm_kab")
+            }
+            stats_kab_map = stats_kab_local[
+                (stats_kab_local["Kabupaten_Clean"] != "TIDAK TERDEFINISI")
+                & (stats_kab_local["Kabupaten_Clean"].isin(valid_kab_features))
+            ].copy()
 
-            if max_k - min_k < 0.01:
-                min_k -= 1.0
-                max_k += 1.0
+            if not stats_kab_map.empty:
+                v_scores = stats_kab_map["Rata_Rata"].dropna()
+                min_k = float(v_scores.min()) if not v_scores.empty else 0.0
+                max_k = float(v_scores.max()) if not v_scores.empty else 100.0
 
-            fig_kab_map = px.choropleth(
-                stats_kab_local,
-                geojson=geojson_kab,
-                locations="Kabupaten_Clean",
-                featureidkey="properties.norm_kab",
-                color="Rata_Rata",
-                color_continuous_scale=custom_red_to_blue,
-                range_color=(min_k, max_k),
-                labels={
-                    "Rata_Rata": "Rata-Rata Skor",
-                    "Kabupaten_Clean": "Kabupaten / Kota",
-                },
-                hover_data={
-                    "Jumlah_Peserta": ":,.0f",
-                    "Rata_Rata": ":.2f",
-                    "Min": ":.2f",
-                    "Max": ":.2f",
-                },
-                title=(
-                    f"<b>Sebaran Nilai Kabupaten/Kota di Provinsi"
-                    f" {target_prov}</b>"
-                ),
-            )
+                if max_k - min_k < 0.01:
+                    min_k -= 1.0
+                    max_k += 1.0
 
-            fig_kab_map.update_traces(
-                marker_line_color="#ffffff", marker_line_width=1.5
-            )
+                fig_kab_map = px.choropleth(
+                    stats_kab_map,
+                    geojson=geojson_kab,
+                    locations="Kabupaten_Clean",
+                    featureidkey="properties.norm_kab",
+                    color="Rata_Rata",
+                    color_continuous_scale=custom_red_to_blue,
+                    range_color=(min_k, max_k),
+                    labels={
+                        "Rata_Rata": "Rata-Rata Skor",
+                        "Kabupaten_Clean": "Kabupaten / Kota",
+                    },
+                    hover_data={
+                        "Jumlah_Peserta": ":,.0f",
+                        "Rata_Rata": ":.2f",
+                        "Min": ":.2f",
+                        "Max": ":.2f",
+                    },
+                    title=(
+                        f"<b>Sebaran Nilai Kabupaten/Kota di Provinsi"
+                        f" {target_prov}</b>"
+                    ),
+                )
 
-            fig_kab_map.update_geos(
-                fitbounds="locations",
-                visible=False,
-                showcoastlines=True,
-                coastlinecolor="#ffffff",
-                coastlinewidth=1.2,
-                showsubunits=True,
-                subunitcolor="#ffffff",
-                subunitwidth=1.5,
-                showland=True,
-                landcolor="#1c212c",
-                showocean=True,
-                oceancolor="#0e1117",
-            )
+                fig_kab_map.update_traces(
+                    marker_line_color="#ffffff", marker_line_width=1.5
+                )
 
-            fig_kab_map.update_layout(
-                margin={"r": 0, "t": 40, "l": 0, "b": 0},
-                paper_bgcolor="#0e1117",
-                plot_bgcolor="#0e1117",
-                font_color="#ffffff",
-                height=550,
-            )
+                fig_kab_map.update_geos(
+                    fitbounds="locations",
+                    visible=False,
+                    showcoastlines=True,
+                    coastlinecolor="#ffffff",
+                    coastlinewidth=1.2,
+                    showsubunits=True,
+                    subunitcolor="#ffffff",
+                    subunitwidth=1.5,
+                    showland=True,
+                    landcolor="#1c212c",
+                    showocean=True,
+                    oceancolor="#0e1117",
+                )
 
-            st.plotly_chart(fig_kab_map, use_container_width=True)
+                fig_kab_map.update_layout(
+                    margin={"r": 0, "t": 40, "l": 0, "b": 0},
+                    paper_bgcolor="#0e1117",
+                    plot_bgcolor="#0e1117",
+                    font_color="#ffffff",
+                    height=550,
+                )
+
+                st.plotly_chart(fig_kab_map, use_container_width=True)
+            else:
+                st.info(
+                    f"ℹ️ Peta batas visual belum tersedia untuk nama-nama kabupaten di provinsi **{target_prov}**, silakan tinjau grafik dan tabel di bawah."
+                )
         else:
             st.warning(
                 "⚠️ Data GeoJSON Kabupaten/Kota atau data rekap kabupaten"
