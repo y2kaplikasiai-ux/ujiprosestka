@@ -241,6 +241,23 @@ def run_ctt_analysis(df_matrix, df_respon=None, df_kunci=None):
 
     # Hitung metrik CTT per butir
     df_item_stats = calculate_ctt_metrics(X_mat, item_cols, total_scores=skor_mentah)
+
+    # Sertakan metadata mapel jika tersedia dari df_kunci atau df_matrix
+    if df_kunci is not None and not df_kunci.empty:
+        col_mapel = next((c for c in df_kunci.columns if str(c).strip().lower() in ['mapel', 'mata_pelajaran', 'mata pelajaran', 'subject', 'paket', 'nama_mapel']), None)
+        col_soal = next((c for c in df_kunci.columns if str(c).strip().lower() in ['kode_soal', 'id_soal', 'soal', 'no_soal', 'kd_soal']), None)
+        if col_mapel and col_soal:
+            mapel_dict = dict(zip(df_kunci[col_soal].astype(str).str.strip(), df_kunci[col_mapel].astype(str).str.strip()))
+            df_item_stats['mapel'] = df_item_stats['Kode_Soal'].astype(str).map(mapel_dict)
+
+    if 'mapel' not in df_item_stats.columns or df_item_stats['mapel'].isna().all():
+        if 'mapel' in df_matrix.columns:
+            m_vals = df_matrix['mapel'].dropna().unique()
+            if len(m_vals) == 1:
+                df_item_stats['mapel'] = str(m_vals[0]).upper()
+            elif len(m_vals) > 1:
+                df_item_stats['mapel'] = "UMUM"
+
     df_distractor = calculate_distractor_analysis(df_respon, df_kunci, df_result)
 
     mean_val = round(float(konversi_scores.mean()), 2) if len(konversi_scores) > 0 else 0.0

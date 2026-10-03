@@ -633,6 +633,32 @@ def render_tab_irt(df_matrix, dfs, ctt_res):
 
     # --- GRAFIK ICC, TIF, DAN WRIGHT MAP ---
     if not df_params.empty:
+        # Tambahkan mapel ke df_params jika belum ada
+        if "mapel" not in df_params.columns:
+            if dfs and "kunci" in dfs and dfs["kunci"] is not None and not dfs["kunci"].empty:
+                df_k = dfs["kunci"]
+                c_m = next((c for c in df_k.columns if str(c).strip().lower() in ["mapel", "mata_pelajaran", "mata pelajaran", "subject", "paket"]), None)
+                c_s = next((c for c in df_k.columns if str(c).strip().lower() in ["kode_soal", "id_soal", "soal", "kd_soal"]), None)
+                if c_m and c_s:
+                    m_dict = dict(zip(df_k[c_s].astype(str).str.strip(), df_k[c_m].astype(str).str.strip()))
+                    first_c = df_params.columns[0]
+                    df_params["mapel"] = df_params[first_c].astype(str).str.strip().map(m_dict)
+            elif df_matrix is not None and "mapel" in df_matrix.columns:
+                m_vals = df_matrix["mapel"].dropna().unique()
+                if len(m_vals) == 1:
+                    df_params["mapel"] = str(m_vals[0]).upper()
+
+        if "mapel" in df_params.columns and df_params["mapel"].notna().any():
+            available_irt_mapels = ["Semua"] + sorted([str(m) for m in df_params["mapel"].dropna().unique()])
+            if len(available_irt_mapels) > 2:
+                selected_irt_mapel = st.selectbox(
+                    "Filter Mata Pelajaran Butir Soal:",
+                    options=available_irt_mapels,
+                    key="filter_irt_item_mapel"
+                )
+                if selected_irt_mapel != "Semua":
+                    df_params = df_params[df_params["mapel"] == selected_irt_mapel].copy()
+
         item_col_name = df_params.columns[0]
         all_items = df_params[item_col_name].astype(str).tolist()
         selected_items = st.multiselect(

@@ -28,7 +28,8 @@ def reset_and_create_tables():
     drop_query = "DROP TABLE IF EXISTS tb_peserta_skor;"
     create_query = """
     CREATE TABLE tb_peserta_skor (
-        username VARCHAR(100) PRIMARY KEY,
+        username VARCHAR(100) NOT NULL,
+        mapel VARCHAR(100) NOT NULL DEFAULT 'UMUM',
         kode_sekolah VARCHAR(50),
         nama_sekolah VARCHAR(255),
         nama_kabupaten VARCHAR(100),
@@ -41,8 +42,10 @@ def reset_and_create_tables():
         skor_konversi_2pl FLOAT NULL,
         skor_konversi_3pl FLOAT NULL,
         Jumlah_Soal INT NULL,
+        PRIMARY KEY (username, mapel),
         INDEX idx_sekolah (kode_sekolah),
-        INDEX idx_provinsi (kode_provinsi)
+        INDEX idx_provinsi (kode_provinsi),
+        INDEX idx_mapel (mapel)
     );
     """
 
@@ -80,6 +83,11 @@ def pipeline_proses_dan_simpan_mysql(df_matrix_school, irt_dict, scale_params=No
 
     df_final = pd.DataFrame()
     df_final["username"] = df_matrix_school[usr_col].astype(str).str.strip()
+    df_final["mapel"] = (
+        df_matrix_school["mapel"].fillna("UMUM").astype(str).str.strip().str.upper()
+        if "mapel" in df_matrix_school.columns
+        else "UMUM"
+    )
 
     df_final["kode_sekolah"] = (
         df_matrix_school["_school_key"]
@@ -188,7 +196,7 @@ def pipeline_proses_dan_simpan_mysql(df_matrix_school, irt_dict, scale_params=No
         else:
             df_final[col_db_name] = np.nan
 
-    df_final = df_final.drop_duplicates(subset=["username"]).copy()
+    df_final = df_final.drop_duplicates(subset=["username", "mapel"]).copy()
 
     # Menggunakan batch insertion (chunksize) agar penulisan ke MySQL aman dari memory spike
     df_final.to_sql(
@@ -296,8 +304,10 @@ def process_scoring(df_respon, df_kunci, batch_size=50000):
 
         df_matrix = pd.DataFrame(score_matrix, columns=used_items)
         df_matrix.insert(0, "username", df_respon[id_col_respon].values)
+        if "mapel" in df_respon.columns:
+            df_matrix.insert(1, "mapel", df_respon["mapel"].values)
         if kode_paket_col:
-            df_matrix.insert(1, "kode_paket", df_respon[kode_paket_col].values)
+            df_matrix.insert(2 if "mapel" in df_respon.columns else 1, "kode_paket", df_respon[kode_paket_col].values)
         df_matrix["Jumlah_Soal"] = jumlah_soal_list
 
     elif "kode_soal" in df_respon.columns and "jawaban" in df_respon.columns:
@@ -323,9 +333,14 @@ def process_scoring(df_respon, df_kunci, batch_size=50000):
             df_matrix.rename(columns={id_col_respon: "username"}, inplace=True)
             id_col_respon = "username"
 
+        if "mapel" in df_respon.columns:
+            mapel_map = df_respon.groupby(id_col_respon)["mapel"].first()
+            df_matrix.insert(1, "mapel", df_matrix["username"].map(mapel_map))
+
         if kode_paket_col:
             paket_map = df_respon.groupby(id_col_respon)[kode_paket_col].first()
-            df_matrix.insert(1, "kode_paket", df_matrix["username"].map(paket_map))
+            insert_pos = 2 if "mapel" in df_matrix.columns else 1
+            df_matrix.insert(insert_pos, "kode_paket", df_matrix["username"].map(paket_map))
 
         df_matrix["Jumlah_Soal"] = df_matrix["username"].map(jml_soal_per_user).fillna(0).astype(int)
 
@@ -333,12 +348,15 @@ def process_scoring(df_respon, df_kunci, batch_size=50000):
         df_matrix = pd.DataFrame()
         df_matrix["username"] = df_respon[id_col_respon]
 
+        if "mapel" in df_respon.columns:
+            df_matrix["mapel"] = df_respon["mapel"]
+
         if kode_paket_col:
             df_matrix["kode_paket"] = df_respon[kode_paket_col]
 
         soal_cols = []
         for col in df_respon.columns:
-            if col in [id_col_respon, kode_paket_col]:
+            if col in [id_col_respon, kode_paket_col, "mapel"]:
                 continue
 
             col_clean = str(col).strip()
@@ -359,6 +377,7 @@ def process_scoring(df_respon, df_kunci, batch_size=50000):
 
     non_item = [
         "username",
+        "mapel",
         "kode_paket",
         "skor_mentah",
         "nilai_konversi",

@@ -35,6 +35,20 @@ def render_tab_ctt(ctt_res, df_matrix=None, dfs=None):
         st.warning("⚠️ Tabel item_stats kosong.")
         return
 
+    if not any(c.lower() in ["mapel", "mata_pelajaran", "mata pelajaran", "subject", "paket"] for c in df_items.columns):
+        if dfs and "kunci" in dfs and dfs["kunci"] is not None and not dfs["kunci"].empty:
+            df_k = dfs["kunci"]
+            c_m = next((c for c in df_k.columns if str(c).strip().lower() in ["mapel", "mata_pelajaran", "mata pelajaran", "subject", "paket"]), None)
+            c_s = next((c for c in df_k.columns if str(c).strip().lower() in ["kode_soal", "id_soal", "soal", "kd_soal"]), None)
+            if c_m and c_s:
+                m_dict = dict(zip(df_k[c_s].astype(str).str.strip(), df_k[c_m].astype(str).str.strip()))
+                soal_col_item = df_items.columns[0]
+                df_items["mapel"] = df_items[soal_col_item].astype(str).str.strip().map(m_dict)
+        elif df_matrix is not None and "mapel" in df_matrix.columns:
+            m_vals = df_matrix["mapel"].dropna().unique()
+            if len(m_vals) == 1:
+                df_items["mapel"] = str(m_vals[0]).upper()
+
     mapel_cols = [
         c
         for c in df_items.columns
@@ -44,7 +58,7 @@ def render_tab_ctt(ctt_res, df_matrix=None, dfs=None):
     if mapel_cols:
         mapel_col = mapel_cols[0]
         list_mapel = ["Semua"] + sorted(
-            df_items[mapel_col].dropna().unique().tolist()
+            [str(x) for x in df_items[mapel_col].dropna().unique().tolist()]
         )
         selected_mapel = st.selectbox(
             "Filter Mata Pelajaran / Paket:", options=list_mapel, key="filter_ctt_mapel"

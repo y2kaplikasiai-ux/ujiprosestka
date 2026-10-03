@@ -365,10 +365,21 @@ def _get_region_df(df_matrix_school, dfs):
     df_base = None
     if df_matrix_school is not None and not df_matrix_school.empty:
         df_base = df_matrix_school
+    elif st.session_state.get("df_matrix_school") is not None and not st.session_state["df_matrix_school"].empty:
+        df_base = st.session_state["df_matrix_school"]
     elif st.session_state.get("df_matrix") is not None and not st.session_state["df_matrix"].empty:
         df_base = st.session_state["df_matrix"]
     elif isinstance(dfs, dict) and "respon" in dfs:
         df_base = dfs["respon"]
+    else:
+        # Coba ambil langsung dari MySQL tb_peserta_skor jika sesi kosong
+        try:
+            from db_helper import load_data_from_mysql
+            df_from_db = load_data_from_mysql()
+            if df_from_db is not None and not df_from_db.empty:
+                df_base = df_from_db
+        except Exception:
+            pass
 
     if df_base is None or df_base.empty:
         return pd.DataFrame()
@@ -379,7 +390,11 @@ def _get_region_df(df_matrix_school, dfs):
         df_res.columns[0]
     )
     df_res["username_clean"] = df_res[col_user].astype(str).str.strip().str.lower()
-    df_res = df_res[df_res["username_clean"] != "nan"].drop_duplicates("username_clean").copy()
+    if "mapel" in df_res.columns:
+        df_res["mapel"] = df_res["mapel"].fillna("UMUM").astype(str).str.strip().str.upper()
+        df_res = df_res[df_res["username_clean"] != "nan"].drop_duplicates(subset=["username_clean", "mapel"]).copy()
+    else:
+        df_res = df_res[df_res["username_clean"] != "nan"].drop_duplicates("username_clean").copy()
 
     # Cek apakah kolom wilayah sudah ada dan valid di df_res
     has_prov = "nama_provinsi" in df_res.columns and (
@@ -399,20 +414,30 @@ def _get_region_df(df_matrix_school, dfs):
             engine = get_db_connection()
             if engine:
                 df_meta = pd.read_sql(
-                    "SELECT username, nama_provinsi, nama_kabupaten, kode_provinsi FROM tb_peserta_skor WHERE username IS NOT NULL AND username != ''",
+                    "SELECT username, mapel, nama_provinsi, nama_kabupaten, kode_provinsi FROM tb_peserta_skor WHERE username IS NOT NULL AND username != ''",
                     engine,
                 )
                 if not df_meta.empty:
                     df_meta["username_clean"] = df_meta["username"].astype(str).str.strip().str.lower()
-                    # Hapus kolom yang berpotensi collision sebelum merge
-                    for c_drop in ["nama_provinsi", "nama_kabupaten", "kode_provinsi"]:
-                        if c_drop in df_res.columns:
-                            df_res = df_res.drop(columns=[c_drop])
-                    df_res = df_res.merge(
-                        df_meta.drop(columns=["username"]).drop_duplicates("username_clean"),
-                        on="username_clean",
-                        how="left",
-                    )
+                    if "mapel" in df_meta.columns and "mapel" in df_res.columns:
+                        df_meta["mapel"] = df_meta["mapel"].fillna("UMUM").astype(str).str.strip().str.upper()
+                        for c_drop in ["nama_provinsi", "nama_kabupaten", "kode_provinsi"]:
+                            if c_drop in df_res.columns:
+                                df_res = df_res.drop(columns=[c_drop])
+                        df_res = df_res.merge(
+                            df_meta.drop(columns=["username"]).drop_duplicates(subset=["username_clean", "mapel"]),
+                            on=["username_clean", "mapel"],
+                            how="left",
+                        )
+                    else:
+                        for c_drop in ["nama_provinsi", "nama_kabupaten", "kode_provinsi"]:
+                            if c_drop in df_res.columns:
+                                df_res = df_res.drop(columns=[c_drop])
+                        df_res = df_res.merge(
+                            df_meta.drop(columns=["username"]).drop_duplicates("username_clean"),
+                            on="username_clean",
+                            how="left",
+                        )
         except Exception:
             pass
 
@@ -505,42 +530,21 @@ def render_tab_region(df_matrix_school, dfs):
         )
         return
 
-    score_columns_map = {}
-
-    # 1. Klasik / CTT (Skala 0-100)
-    # Sumber A: skor_konversi_ctt langsung yang tersimpan di dataframe
+    # 1. Pastikan kolom skor CTT tersedia di df_base
     if "skor_konversi_ctt" in df_base.columns and df_base["skor_konversi_ctt"].notna().any():
-        df_temp = pd.DataFrame()
-        df_temp["username_clean"] = df_base["username_clean"]
-        df_temp["Klasik / CTT (Skala 0-100)"] = pd.to_numeric(df_base["skor_konversi_ctt"], errors="coerce")
-        score_columns_map["Klasik / CTT (Skala 0-100)"] = df_temp.drop_duplicates("username_clean")
+        df_base["Klasik / CTT (Skala 0-100)"] = pd.to_numeric(df_base["skor_konversi_ctt"], errors="coerce")
     elif "skor_mentah" in df_base.columns:
         vals = pd.to_numeric(df_base["skor_mentah"], errors="coerce")
-        n_soal = 1.0
-        if "Jumlah_Soal" in df_base.columns:
-            n_soal_cand = pd.to_numeric(df_base["Jumlah_Soal"], errors="coerce").max()
-            if pd.notna(n_soal_cand) and n_soal_cand > 0:
-                n_soal = n_soal_cand
-        elif not vals.dropna().empty and vals.max() > 0:
-            n_soal = vals.max()
-        df_temp = pd.DataFrame()
-        df_temp["username_clean"] = df_base["username_clean"]
-        df_temp["Klasik / CTT (Skala 0-100)"] = ((vals / n_soal) * 100.0).round(2)
-        score_columns_map["Klasik / CTT (Skala 0-100)"] = df_temp.drop_duplicates("username_clean")
+        n_soal = pd.to_numeric(df_base.get("Jumlah_Soal", 1), errors="coerce").fillna(1).clip(lower=1)
+        df_base["Klasik / CTT (Skala 0-100)"] = ((vals / n_soal) * 100.0).round(2)
 
-    # 2. Model IRT (Rasch, 1PL, 2PL, 3PL)
+    # 2. Pastikan kolom skor IRT tersedia di df_base
     irt_results = st.session_state.get("irt_results", {})
     for m_key in ["rasch", "1pl", "2pl", "3pl"]:
         label_name = f"IRT {m_key.upper()} (Skala Konversi)"
         col_db = f"skor_konversi_{m_key}"
-        
-        # Coba ambil dari df_base terlebih dahulu (jika dari database/cache)
         if col_db in df_base.columns and df_base[col_db].notna().any():
-            df_temp = pd.DataFrame()
-            df_temp["username_clean"] = df_base["username_clean"]
-            df_temp[label_name] = pd.to_numeric(df_base[col_db], errors="coerce")
-            score_columns_map[label_name] = df_temp.drop_duplicates("username_clean")
-        # Fallback: ambil dari irt_results session_state
+            df_base[label_name] = pd.to_numeric(df_base[col_db], errors="coerce")
         elif m_key in irt_results and isinstance(irt_results[m_key], dict):
             df_p = irt_results[m_key].get("df_person")
             if df_p is not None and not df_p.empty:
@@ -556,51 +560,90 @@ def render_tab_region(df_matrix_school, dfs):
                                 s_col = nc
                                 break
                 if s_col:
-                    score_columns_map[label_name] = (
-                        df_p[["username_clean", s_col]]
-                        .rename(columns={s_col: label_name})
-                        .drop_duplicates("username_clean")
-                    )
+                    p_map = dict(zip(df_p["username_clean"], pd.to_numeric(df_p[s_col], errors="coerce")))
+                    df_base[label_name] = df_base["username_clean"].map(p_map)
 
-    if not score_columns_map:
+    # Metrik skor yang valid
+    metric_candidates = [
+        "Klasik / CTT (Skala 0-100)",
+        "IRT RASCH (Skala Konversi)",
+        "IRT 1PL (Skala Konversi)",
+        "IRT 2PL (Skala Konversi)",
+        "IRT 3PL (Skala Konversi)",
+    ]
+    available_metrics = [m for m in metric_candidates if m in df_base.columns and df_base[m].notna().any()]
+
+    if not available_metrics:
         st.info(
             "💡 Belum ada data nilai konversi yang tersedia. Silakan jalankan"
             " **Scoring Engine** atau **Analisis IRT** terlebih dahulu."
         )
         return
 
-    col_sel1, _ = st.columns(2)
+    # Deteksi Mata Pelajaran yang tersedia
+    available_mapels = []
+    if "mapel" in df_base.columns:
+        available_mapels = sorted([
+            str(m).strip() for m in df_base["mapel"].dropna().unique()
+            if str(m).strip() not in ["", "nan", "None", "-"]
+        ])
+
+    col_sel1, col_sel2 = st.columns(2)
     with col_sel1:
-        sorted_opt_keys = sorted(
-            list(score_columns_map.keys()),
-            key=lambda x: 0 if "KLASIK" in x.upper() or "CTT" in x.upper() else 1,
-        )
         prev_idx = 0
-        if "selected_region_score_label" in st.session_state and st.session_state["selected_region_score_label"] in sorted_opt_keys:
-            prev_idx = sorted_opt_keys.index(st.session_state["selected_region_score_label"])
+        if "selected_region_score_label" in st.session_state and st.session_state["selected_region_score_label"] in available_metrics:
+            prev_idx = available_metrics.index(st.session_state["selected_region_score_label"])
 
         selected_score_label = st.selectbox(
             "🎯 Pilih Metode Skor Konversi:",
-            options=sorted_opt_keys,
+            options=available_metrics,
             index=prev_idx,
             key="tab6_score_dropdown",
-            help=(
-                "Pilih model nilai konversi (skala 0-100) yang akan dianalisis"
-                " distribusinya secara geografis."
-            ),
+            help="Pilih model nilai konversi (skala 0-100) yang akan dianalisis distribusinya secara geografis.",
         )
         st.session_state["selected_region_score_label"] = selected_score_label
 
-    df_score_selected = score_columns_map[selected_score_label].copy()
-    val_col_name = selected_score_label
+    df_working = df_base.copy()
 
-    df_merged = df_base.merge(
-        df_score_selected, on="username_clean", how="inner"
+    with col_sel2:
+        if available_mapels:
+            selected_mapels = st.multiselect(
+                "📚 Filter & Gabungan Mata Pelajaran:",
+                options=available_mapels,
+                default=available_mapels,
+                key="tab6_mapel_multiselect",
+                help="Pilih 1 atau beberapa mata pelajaran. Jika memilih lebih dari 1 (misal 3 mapel), nilai per peserta akan dihitung dari rerata gabungan sebelum dipetakan ke wilayah.",
+            )
+            if not selected_mapels:
+                st.warning("⚠️ Silakan pilih setidaknya satu mata pelajaran untuk dianalisis.")
+                return
+            df_working = df_working[df_working["mapel"].isin(selected_mapels)].copy()
+        else:
+            selected_mapels = []
+
+    if available_mapels and len(selected_mapels) > 1:
+        st.info(f"✨ **Analisis Wilayah Gabungan ({len(selected_mapels)} Mapel):** {', '.join(selected_mapels)}. Statistik provinsi, peta, dan ranking dihitung dari nilai gabungan rata-rata peserta.")
+    elif available_mapels and len(selected_mapels) == 1:
+        st.caption(f"📌 **Mata Pelajaran Aktif:** {selected_mapels[0]}")
+
+    val_col_name = selected_score_label
+    df_working[val_col_name] = pd.to_numeric(df_working[val_col_name], errors="coerce")
+    df_valid = df_working.dropna(subset=[val_col_name]).copy()
+
+    if df_valid.empty:
+        st.error("❌ Tidak ada data skor valid untuk mata pelajaran dan metode yang dipilih.")
+        return
+
+    # Kelompokkan per peserta terlebih dahulu untuk menghitung nilai rerata komposit gabungan mapel
+    group_student_cols = ["username_clean", "kode_provinsi", "nama_provinsi", "nama_kabupaten"]
+    for c_extra in ["nama_provinsi_singkat", "nama_singkat", "singkatan"]:
+        if c_extra in df_valid.columns and c_extra not in group_student_cols:
+            group_student_cols.append(c_extra)
+
+    df_merged = (
+        df_valid.groupby(group_student_cols, as_index=False)
+        .agg({val_col_name: "mean"})
     )
-    df_merged[val_col_name] = pd.to_numeric(
-        df_merged[val_col_name], errors="coerce"
-    )
-    df_merged = df_merged.dropna(subset=[val_col_name])
 
     if df_merged.empty:
         st.error(

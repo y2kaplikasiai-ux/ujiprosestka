@@ -150,19 +150,20 @@ def check_db_status():
 
 
 def init_db_tables() -> bool:
-    """Mempersiapkan struktur tabel MySQL jika belum ada."""
+    """Mempersiapkan struktur tabel MySQL jika belum ada, serta memastikan kolom mapel tersedia."""
     engine = get_db_connection()
     if engine is None:
         return False
 
     try:
         with engine.begin() as conn:
-            # 1. Tabel Peserta & Skor (Primary Key: username)
+            # 1. Tabel Peserta & Skor (Primary Key: username, mapel)
             conn.execute(
                 text(
                     """
                 CREATE TABLE IF NOT EXISTS tb_peserta_skor (
-                    username VARCHAR(100) PRIMARY KEY,
+                    username VARCHAR(100) NOT NULL,
+                    mapel VARCHAR(100) NOT NULL DEFAULT 'UMUM',
                     nama_sekolah VARCHAR(255),
                     kode_sekolah VARCHAR(50),
                     nama_kabupaten VARCHAR(100),
@@ -175,19 +176,30 @@ def init_db_tables() -> bool:
                     skor_konversi_2pl DECIMAL(10,2),
                     skor_konversi_3pl DECIMAL(10,2),
                     Jumlah_Soal INT,
+                    PRIMARY KEY (username, mapel),
                     INDEX idx_sekolah (kode_sekolah),
-                    INDEX idx_provinsi (kode_provinsi)
+                    INDEX idx_provinsi (kode_provinsi),
+                    INDEX idx_mapel (mapel)
                 );
             """
                 )
             )
 
-            # 2. Tabel Parameter Soal
+            # Cek apakah kolom mapel sudah ada di tb_peserta_skor (jika tabel lama sudah ada)
+            try:
+                res = conn.execute(text("SHOW COLUMNS FROM tb_peserta_skor LIKE 'mapel';")).fetchall()
+                if not res:
+                    conn.execute(text("ALTER TABLE tb_peserta_skor DROP PRIMARY KEY, ADD COLUMN mapel VARCHAR(100) NOT NULL DEFAULT 'UMUM' AFTER username, ADD PRIMARY KEY (username, mapel);"))
+            except Exception:
+                pass
+
+            # 2. Tabel Parameter Soal (Primary Key: kode_soal, mapel)
             conn.execute(
                 text(
                     """
                 CREATE TABLE IF NOT EXISTS tb_soal_parameter (
-                    kode_soal VARCHAR(100) PRIMARY KEY,
+                    kode_soal VARCHAR(100) NOT NULL,
+                    mapel VARCHAR(100) NOT NULL DEFAULT 'UMUM',
                     tingkat_kesukaran_ctt FLOAT,
                     daya_beda_ctt FLOAT,
                     rekomendasi VARCHAR(100),
@@ -197,11 +209,20 @@ def init_db_tables() -> bool:
                     b_2pl FLOAT,
                     a_3pl FLOAT,
                     b_3pl FLOAT,
-                    c_3pl FLOAT
+                    c_3pl FLOAT,
+                    PRIMARY KEY (kode_soal, mapel),
+                    INDEX idx_soal_mapel (mapel)
                 );
             """
                 )
             )
+
+            try:
+                res_soal = conn.execute(text("SHOW COLUMNS FROM tb_soal_parameter LIKE 'mapel';")).fetchall()
+                if not res_soal:
+                    conn.execute(text("ALTER TABLE tb_soal_parameter DROP PRIMARY KEY, ADD COLUMN mapel VARCHAR(100) NOT NULL DEFAULT 'UMUM' AFTER kode_soal, ADD PRIMARY KEY (kode_soal, mapel);"))
+            except Exception:
+                pass
 
             # 3. Tabel Ringkasan Model
             conn.execute(
@@ -275,7 +296,13 @@ def _clean_dataframe(df: pd.DataFrame, key_column: str) -> pd.DataFrame:
     df_clean = df_clean.dropna(subset=[key_column])
     df_clean[key_column] = df_clean[key_column].astype(str).str.strip()
     df_clean = df_clean[~df_clean[key_column].isin(['', 'nan', 'None', 'NONE'])]
-    df_clean = df_clean.drop_duplicates(subset=[key_column], keep='first')
+
+    # Jika ada kolom mapel dan key_column adalah username atau kode_soal, deduplikasi berdasarkan (key, mapel)
+    if "mapel" in df_clean.columns and key_column in ["username", "kode_soal"]:
+        df_clean["mapel"] = df_clean["mapel"].fillna("UMUM").astype(str).str.strip().str.upper()
+        df_clean = df_clean.drop_duplicates(subset=[key_column, "mapel"], keep='first')
+    else:
+        df_clean = df_clean.drop_duplicates(subset=[key_column], keep='first')
 
     return df_clean
 
@@ -321,24 +348,30 @@ def prepare_and_save_analysis(
         # Filter kolom sesuai skema tabel
         if df_peserta_clean is not None and not df_peserta_clean.empty:
             valid_cols = [
-                "username", "nama_sekolah", "kode_sekolah", "nama_kabupaten",
+                "username", "mapel", "nama_sekolah", "kode_sekolah", "nama_kabupaten",
                 "nama_provinsi", "kode_provinsi", "skor_mentah", "skor_konversi_ctt",
                 "skor_konversi_rasch", "skor_konversi_1pl", "skor_konversi_2pl",
                 "skor_konversi_3pl", "Jumlah_Soal"
             ]
             for col in valid_cols:
                 if col not in df_peserta_clean.columns:
-                    df_peserta_clean[col] = None
+                    if col == "mapel":
+                        df_peserta_clean[col] = "UMUM"
+                    else:
+                        df_peserta_clean[col] = None
             df_peserta_clean = df_peserta_clean[valid_cols]
 
         if df_soal_clean is not None and not df_soal_clean.empty:
             valid_soal_cols = [
-                "kode_soal", "tingkat_kesukaran_ctt", "daya_beda_ctt", "rekomendasi",
+                "kode_soal", "mapel", "tingkat_kesukaran_ctt", "daya_beda_ctt", "rekomendasi",
                 "b_rasch", "b_1pl", "a_2pl", "b_2pl", "a_3pl", "b_3pl", "c_3pl"
             ]
             for col in valid_soal_cols:
                 if col not in df_soal_clean.columns:
-                    df_soal_clean[col] = None
+                    if col == "mapel":
+                        df_soal_clean[col] = "UMUM"
+                    else:
+                        df_soal_clean[col] = None
             df_soal_clean = df_soal_clean[valid_soal_cols]
 
         with engine.begin() as conn:

@@ -49,7 +49,7 @@ def render_tab_school(df_matrix_school, dfs=None, irt_results=None):
         essential_cols = [
             c for c in df_matrix_school.columns 
             if c in [
-                "username", "user_id", "id_peserta", "nama", "nama_sekolah", "sekolah", "nama_lembaga", 
+                "username", "user_id", "id_peserta", "nama", "mapel", "nama_sekolah", "sekolah", "nama_lembaga", 
                 "kode_sekolah", "npsn", "_school_key", "nama_kabupaten", "kabupaten", 
                 "nama_provinsi", "provinsi", "kd_prop", "kode_provinsi", "skor_mentah", 
                 "Jumlah_Soal", "skor_konversi_ctt", "skor_konversi_rasch", 
@@ -176,7 +176,36 @@ def render_tab_school(df_matrix_school, dfs=None, irt_results=None):
 
     st.divider()
 
-    # --- 4. FILTER WILAYAH & JUMLAH PESERTA ---
+    # --- 4. FILTER MATA PELAJARAN (MULTI-SELECT / GABUNGAN) ---
+    available_mapels = []
+    if "mapel" in df_master.columns:
+        available_mapels = sorted([
+            str(m).strip() for m in df_master["mapel"].dropna().unique()
+            if str(m).strip() not in ["", "nan", "None", "-"]
+        ])
+
+    df_filtered_school = df_master.copy()
+
+    if available_mapels:
+        st.markdown("#### 📚 Filter & Penggabungan Mata Pelajaran")
+        selected_mapels = st.multiselect(
+            "Pilih Mata Pelajaran (Bisa memilih lebih dari 1 untuk analisis gabungan):",
+            options=available_mapels,
+            default=available_mapels,
+            key="filter_school_mapel_multi",
+            help="Pilih 1 atau beberapa mata pelajaran. Jika memilih lebih dari 1 mata pelajaran (misal 3 mapel), nilai per peserta akan dihitung dari rata-rata gabungan sebelum dianalisis per sekolah."
+        )
+        if not selected_mapels:
+            st.warning("⚠️ Silakan pilih setidaknya satu mata pelajaran untuk dianalisis.")
+            return
+
+        df_filtered_school = df_filtered_school[df_filtered_school["mapel"].isin(selected_mapels)].copy()
+        if len(selected_mapels) > 1:
+            st.info(f"✨ **Analisis Gabungan ({len(selected_mapels)} Mapel):** {', '.join(selected_mapels)}. Rerata nilai sekolah dihitung dari gabungan nilai siswa.")
+        else:
+            st.caption(f"📌 **Mata Pelajaran Aktif:** {selected_mapels[0]}")
+
+    # --- 5. FILTER WILAYAH & JUMLAH PESERTA ---
     st.markdown("#### 🔍 Filter Wilayah & Jumlah Peserta")
     col_f1, col_f2 = st.columns(2)
 
@@ -218,8 +247,6 @@ def render_tab_school(df_matrix_school, dfs=None, irt_results=None):
             help="Tampilkan hanya sekolah yang memiliki jumlah peserta minimal sejumlah angka ini.",
         )
 
-    df_filtered_school = df_master.copy()
-
     if selected_prov_options:
         selected_codes = [opt.split(" - ")[0].strip() for opt in selected_prov_options]
         df_filtered_school["_kd_prop_clean"] = (
@@ -240,7 +267,7 @@ def render_tab_school(df_matrix_school, dfs=None, irt_results=None):
 
     df_filtered_school[selected_metric_col] = pd.to_numeric(df_filtered_school[selected_metric_col], errors="coerce")
 
-    # --- 5. AGREGASI DATA PER SEKOLAH ---
+    # --- 6. AGREGASI DATA PER SEKOLAH (DENGAN KOMPOSIT SISWA) ---
     id_user_col = "username" if "username" in df_filtered_school.columns else df_filtered_school.columns[0]
     col_sek_kd = "kode_sekolah" if "kode_sekolah" in df_filtered_school.columns else "_school_key"
     
@@ -250,13 +277,25 @@ def render_tab_school(df_matrix_school, dfs=None, irt_results=None):
     if "nama_provinsi" in df_filtered_school.columns:
         group_cols.append("nama_provinsi")
 
-    df_valid_scores = df_filtered_school.dropna(subset=[selected_metric_col])
+    df_valid_scores = df_filtered_school.dropna(subset=[selected_metric_col]).copy()
 
-    if df_valid_scores.empty:
+    # Kelompokkan per peserta terlebih dahulu untuk menghitung rerata komposit jika ada gabungan mapel
+    student_cols = [id_user_col, col_sek_kd, "nama_sekolah"]
+    if "nama_kabupaten" in df_valid_scores.columns:
+        student_cols.append("nama_kabupaten")
+    if "nama_provinsi" in df_valid_scores.columns:
+        student_cols.append("nama_provinsi")
+
+    df_student_composite = (
+        df_valid_scores.groupby(student_cols, as_index=False)
+        .agg({selected_metric_col: "mean"})
+    )
+
+    if df_student_composite.empty:
         df_school_summary = (
             df_filtered_school.groupby(group_cols, as_index=False)
             .agg(
-                Jumlah_Peserta=(id_user_col, "count"),
+                Jumlah_Peserta=(id_user_col, "nunique"),
                 Rata_Rata=(selected_metric_col, lambda x: 0.0),
                 Nilai_Min=(selected_metric_col, lambda x: 0.0),
                 Nilai_Max=(selected_metric_col, lambda x: 0.0),
@@ -265,7 +304,7 @@ def render_tab_school(df_matrix_school, dfs=None, irt_results=None):
         )
     else:
         df_school_summary = (
-            df_valid_scores.groupby(group_cols, as_index=False)
+            df_student_composite.groupby(group_cols, as_index=False)
             .agg(
                 Jumlah_Peserta=(id_user_col, "count"),
                 Rata_Rata=(selected_metric_col, "mean"),

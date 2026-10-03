@@ -212,7 +212,7 @@ if not render_login_gate():
 col_hdr_title, col_hdr_logout = st.columns([8.2, 1.8])
 with col_hdr_title:
     st.markdown(
-        '<div class="main-header">📊 Dashboard Pengolahan & Analisis Psikometri TKA (v.5)</div>',
+        '<div class="main-header">📊 Dashboard Pengolahan & Analisis Psikometri TKA (v.7)</div>',
         unsafe_allow_html=True,
     )
     st.markdown(
@@ -639,28 +639,72 @@ if batch_files:
         elif "paket" in fname or "peta" in fname:
             raw_file_collections["peta_paket"].append(f)
 
-# Penggabungan seluruh file sejenis menjadi 1 DataFrame utuh
+# Penggabungan seluruh file sejenis menjadi 1 DataFrame utuh dengan dukungan multi-mapel
 uploaded_files = {}
 for key, files_list in raw_file_collections.items():
     if not files_list:
         uploaded_files[key] = None
     else:
         df_list = []
-        for fl in files_list:
+        for idx_fl, fl in enumerate(files_list):
             df_temp = read_file_to_df(fl)
             if df_temp is not None and not df_temp.empty:
+                if key == "respon":
+                    col_m = next((c for c in df_temp.columns if str(c).strip().lower() in ["mapel", "mata_pelajaran", "mata pelajaran", "subject", "kode_mapel", "nama_mapel"]), None)
+                    if col_m:
+                        df_temp["mapel"] = df_temp[col_m].astype(str).str.strip().str.upper()
+                    else:
+                        raw_fn = os.path.splitext(fl.name)[0]
+                        clean_fn = re.sub(r'^(tabel[_\s]+respon|lembar[_\s]+respon|respon|response)[_\s\-]*', '', raw_fn, flags=re.IGNORECASE).strip()
+                        clean_fn = re.sub(r'^[_\-\s]+|[_\-\s]+$', '', clean_fn)
+                        if clean_fn:
+                            df_temp["mapel"] = clean_fn.replace('_', ' ').replace('-', ' ').upper()
+                        else:
+                            df_temp["mapel"] = f"MAPEL {idx_fl+1}" if len(files_list) > 1 else "UMUM"
+                elif key == "kunci":
+                    col_m = next((c for c in df_temp.columns if str(c).strip().lower() in ["mapel", "mata_pelajaran", "mata pelajaran", "subject", "kode_mapel", "nama_mapel"]), None)
+                    if col_m:
+                        df_temp["mapel"] = df_temp[col_m].astype(str).str.strip().str.upper()
+                    else:
+                        raw_fn = os.path.splitext(fl.name)[0]
+                        clean_fn = re.sub(r'^(kunci[_\s]+jawaban|kunci|kunci_soal)[_\s\-]*', '', raw_fn, flags=re.IGNORECASE).strip()
+                        clean_fn = re.sub(r'^[_\-\s]+|[_\-\s]+$', '', clean_fn)
+                        if clean_fn:
+                            df_temp["mapel"] = clean_fn.replace('_', ' ').replace('-', ' ').upper()
+                        elif len(files_list) > 1:
+                            df_temp["mapel"] = f"MAPEL {idx_fl+1}"
                 df_list.append(df_temp)
         
         if df_list:
             if len(df_list) == 1:
                 df_merged = df_list[0]
             else:
-                df_merged = pd.concat(df_list, ignore_index=True).drop_duplicates()
+                df_merged = pd.concat(df_list, ignore_index=True)
+                # Deduplikasi dengan aman: jika ada username dan mapel, deduplikasi pada (username, mapel)
+                if key == "respon" and "mapel" in df_merged.columns:
+                    u_col = next((c for c in df_merged.columns if str(c).lower().strip() in ["username", "user_id", "id_peserta"]), None)
+                    if u_col:
+                        df_merged = df_merged.drop_duplicates(subset=[u_col, "mapel"])
+                    else:
+                        df_merged = df_merged.drop_duplicates()
+                else:
+                    df_merged = df_merged.drop_duplicates()
             
             df_merged.name = f"Gabungan_{key.upper()}_({len(df_list)}_files)"
             uploaded_files[key] = df_merged
         else:
             uploaded_files[key] = None
+
+# Jika ada tabel master mapel, selaraskan nama mapel pada respon dan kunci
+if uploaded_files.get("mapel") is not None and not uploaded_files["mapel"].empty:
+    df_mpl = uploaded_files["mapel"].copy()
+    col_kd = next((c for c in df_mpl.columns if "kd" in str(c).lower() or "kode" in str(c).lower() or "id" in str(c).lower()), None)
+    col_nm = next((c for c in df_mpl.columns if "nama" in str(c).lower() or "mapel" in str(c).lower()), None)
+    if col_kd and col_nm:
+        mapel_dict_lookup = dict(zip(df_mpl[col_kd].astype(str).str.strip().str.upper(), df_mpl[col_nm].astype(str).str.strip().str.upper()))
+        for t_k in ["respon", "kunci"]:
+            if uploaded_files.get(t_k) is not None and "mapel" in uploaded_files[t_k].columns:
+                uploaded_files[t_k]["mapel"] = uploaded_files[t_k]["mapel"].map(lambda x: mapel_dict_lookup.get(x, x))
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Status Deteksi Berkas:")
@@ -1193,6 +1237,11 @@ if btn_process:
 
                     usr_col_src = "username" if "username" in df_base.columns else df_base.columns[0]
                     df_peserta_save["username"] = df_base[usr_col_src].astype(str).str.strip()
+                    df_peserta_save["mapel"] = (
+                        df_base["mapel"].fillna("UMUM").astype(str).str.strip().str.upper()
+                        if "mapel" in df_base.columns
+                        else "UMUM"
+                    )
                     df_peserta_save["nama_sekolah"] = (
                         df_base["nama_sekolah"]
                         if "nama_sekolah" in df_base.columns
@@ -1307,6 +1356,13 @@ if btn_process:
                         df_item_ctt = ctt_res["item_stats"].copy()
                         col_soal = df_item_ctt.columns[0]
                         df_soal_save["kode_soal"] = df_item_ctt[col_soal].astype(str)
+                        if "mapel" in df_item_ctt.columns:
+                            df_soal_save["mapel"] = df_item_ctt["mapel"].fillna("UMUM").astype(str).str.strip().str.upper()
+                        elif "mapel" in df_matrix.columns:
+                            m_vals = df_matrix["mapel"].dropna().unique()
+                            df_soal_save["mapel"] = str(m_vals[0]).upper() if len(m_vals) == 1 else "UMUM"
+                        else:
+                            df_soal_save["mapel"] = "UMUM"
 
                         col_diff = next(
                             (
@@ -1439,7 +1495,7 @@ if btn_process:
                                 nama_sekolah=("nama_sekolah", "first"),
                                 nama_kabupaten=("nama_kabupaten", "first"),
                                 nama_provinsi=("nama_provinsi", "first"),
-                                jumlah_peserta=("username", "count"),
+                                jumlah_peserta=("username", "nunique"),
                                 rata_skor_mentah=("skor_mentah", "mean"),
                                 rata_skor_ctt=("skor_konversi_ctt", "mean"),
                                 rata_skor_rasch=("skor_konversi_rasch", "mean"),
