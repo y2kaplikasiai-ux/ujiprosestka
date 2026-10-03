@@ -149,15 +149,82 @@ def format_duration(seconds):
     return f"{hrs:02d}:{mins:02d}:{secs:02d}"
 
 
+# --- 2.5. SISTEM AUTENTIKASI LOGIN (PASSWORD GATE) ---
+APP_PASSWORD = "pusmendikjaya"
+
+if "authenticated" not in st.session_state:
+    st.session_state["authenticated"] = False
+
+
+def render_login_gate():
+    """Menampilkan antarmuka login yang elegan sebelum memuat dashboard."""
+    if st.session_state.get("authenticated", False):
+        return True
+
+    col_pad1, col_box, col_pad2 = st.columns([1, 1.4, 1])
+    with col_box:
+        st.markdown(
+            """
+            <div style="background: #1e293b; border: 1px solid #334155; padding: 36px 32px; border-radius: 14px; margin-top: 50px; margin-bottom: 20px; box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5); text-align: center;">
+                <div style="font-size: 3.5rem; margin-bottom: 12px; line-height: 1;">🔐</div>
+                <h2 style="color: #f8fafc; margin: 0; font-size: 1.6rem; font-weight: 700; letter-spacing: -0.02em;">Dashboard Psikometri TKA</h2>
+                <p style="color: #94a3b8; font-size: 0.95rem; margin-top: 8px; margin-bottom: 0;">Silakan masukkan password untuk mengakses dashboard pengolahan.</p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        with st.form("login_form", clear_on_submit=False):
+            entered_pw = st.text_input(
+                "Password Akses:",
+                type="password",
+                placeholder="Masukkan password...",
+                help="Silakan masukkan password untuk membuka akses dashboard.",
+            )
+            submit_btn = st.form_submit_button("🚀 Masuk ke Dashboard", use_container_width=True)
+
+            if submit_btn:
+                if entered_pw == APP_PASSWORD:
+                    st.session_state["authenticated"] = True
+                    st.success("✅ Password benar! Memuat dashboard...")
+                    st.rerun()
+                elif not entered_pw.strip():
+                    st.warning("⚠️ Mohon masukkan password terlebih dahulu.")
+                else:
+                    st.error("❌ Password salah. Silakan coba kembali.")
+
+        st.markdown(
+            '<div style="text-align: center; color: #64748b; font-size: 0.82rem; margin-top: 14px;">'
+            '🔒 Akses terbatas untuk staf dan pengolah data resmi Puspendik/Pusmendik.'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+
+    return False
+
+
+# Jika belum login, hentikan proses eksekusi dashboard
+if not render_login_gate():
+    st.stop()
+
+
 # 3. Header Utama Aplikasi
-st.markdown(
-    '<div class="main-header">📊 Dashboard Pengolahan & Analisis Psikometri TKA (v.5)</div>',
-    unsafe_allow_html=True,
-)
-st.markdown(
-    '<div class="sub-header">Sistem Pemrosesan Data Respon, CTT (Klasik), dan IRT (Rasch, 1PL, 2PL, 3PL)</div>',
-    unsafe_allow_html=True,
-)
+col_hdr_title, col_hdr_logout = st.columns([8.2, 1.8])
+with col_hdr_title:
+    st.markdown(
+        '<div class="main-header">📊 Dashboard Pengolahan & Analisis Psikometri TKA (v.5)</div>',
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        '<div class="sub-header">Sistem Pemrosesan Data Respon, CTT (Klasik), dan IRT (Rasch, 1PL, 2PL, 3PL)</div>',
+        unsafe_allow_html=True,
+    )
+with col_hdr_logout:
+    st.write("")
+    st.write("")
+    if st.button("🔒 Logout", key="btn_auth_logout", use_container_width=True, help="Keluar dari sesi dashboard"):
+        st.session_state["authenticated"] = False
+        st.rerun()
 
 # Inisialisasi Session State
 if "data_processed" not in st.session_state:
