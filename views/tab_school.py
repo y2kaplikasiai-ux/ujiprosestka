@@ -120,48 +120,7 @@ def render_tab_school(df_matrix_school, dfs=None, irt_results=None):
     df_master["nama_provinsi"] = df_master.get("nama_provinsi", df_master.get("provinsi", "-")).fillna("-").astype(str).str.strip()
     df_master["kode_provinsi"] = df_master.get("kode_provinsi", df_master.get("kd_prop", "-")).fillna("-").astype(str).str.strip()
 
-    # --- 2. DETEKSI METODE NILAI KONVERSI ---
-    available_methods = {}
-
-    # Deteksi langsung kolom skor konversi standar (berlaku baik dari memory maupun MySQL)
-    if "skor_konversi_ctt" in df_master.columns and df_master["skor_konversi_ctt"].notna().any():
-        available_methods["Nilai Konversi (Klasik/CTT)"] = "skor_konversi_ctt"
-    elif "Nilai_Konversi" in df_master.columns and df_master["Nilai_Konversi"].notna().any():
-        available_methods["Nilai Konversi (Klasik/CTT)"] = "Nilai_Konversi"
-
-    if "skor_konversi_rasch" in df_master.columns and df_master["skor_konversi_rasch"].notna().any():
-        available_methods["Nilai Konversi (IRT - Rasch/1PL)"] = "skor_konversi_rasch"
-    elif "skor_konversi_1pl" in df_master.columns and df_master["skor_konversi_1pl"].notna().any():
-        available_methods["Nilai Konversi (IRT - Rasch/1PL)"] = "skor_konversi_1pl"
-
-    if "skor_konversi_2pl" in df_master.columns and df_master["skor_konversi_2pl"].notna().any():
-        available_methods["Nilai Konversi (IRT - 2PL)"] = "skor_konversi_2pl"
-
-    if "skor_konversi_3pl" in df_master.columns and df_master["skor_konversi_3pl"].notna().any():
-        available_methods["Nilai Konversi (IRT - 3PL)"] = "skor_konversi_3pl"
-
-    # Fallback jika belum ada skor konversi
-    if not available_methods:
-        if "skor_mentah" in df_master.columns:
-            available_methods["Skor Mentah (Klasik/CTT)"] = "skor_mentah"
-
-    if not available_methods:
-        st.error("❌ Tidak ditemukan kolom nilai konversi yang dapat dianalisis.")
-        return
-
-    # --- 3. PILIHAN METODE ANALISIS ---
-    st.markdown("#### ⚙️ Pengaturan Metode Analisis")
-    selected_method_label = st.radio(
-        "Pilih Metode & Metrik Nilai yang Ingin Dianalisis:",
-        options=list(available_methods.keys()),
-        horizontal=True,
-        key="radio_sekolah_method",
-    )
-    selected_metric_col = available_methods[selected_method_label]
-
-    st.divider()
-
-    # --- 4. FILTER MATA PELAJARAN (MULTI-SELECT / GABUNGAN) ---
+    # --- 2. FILTER MATA PELAJARAN (DI BAGIAN PALING ATAS - MULTI-SELECT / GABUNGAN) ---
     mapel_lookup = {}
     if dfs and isinstance(dfs, dict) and "mapel" in dfs and dfs["mapel"] is not None and not dfs["mapel"].empty:
         mapel_lookup = get_mapel_lookup_dict(dfs["mapel"])
@@ -206,6 +165,47 @@ def render_tab_school(df_matrix_school, dfs=None, irt_results=None):
             st.info(f"✨ **Analisis Gabungan ({len(selected_mapels)} Mapel):** {', '.join(selected_mapels)}. Rerata nilai sekolah dihitung dari gabungan nilai siswa.")
         else:
             st.caption(f"📌 **Mata Pelajaran Aktif:** {selected_mapels[0]}")
+
+    # --- 3. DETEKSI METODE NILAI KONVERSI ---
+    available_methods = {}
+
+    # Deteksi langsung kolom skor konversi standar (berlaku baik dari memory maupun MySQL)
+    if "skor_konversi_ctt" in df_master.columns and df_master["skor_konversi_ctt"].notna().any():
+        available_methods["Nilai Konversi (Klasik/CTT)"] = "skor_konversi_ctt"
+    elif "Nilai_Konversi" in df_master.columns and df_master["Nilai_Konversi"].notna().any():
+        available_methods["Nilai Konversi (Klasik/CTT)"] = "Nilai_Konversi"
+
+    if "skor_konversi_rasch" in df_master.columns and df_master["skor_konversi_rasch"].notna().any():
+        available_methods["Nilai Konversi (IRT - Rasch/1PL)"] = "skor_konversi_rasch"
+    elif "skor_konversi_1pl" in df_master.columns and df_master["skor_konversi_1pl"].notna().any():
+        available_methods["Nilai Konversi (IRT - Rasch/1PL)"] = "skor_konversi_1pl"
+
+    if "skor_konversi_2pl" in df_master.columns and df_master["skor_konversi_2pl"].notna().any():
+        available_methods["Nilai Konversi (IRT - 2PL)"] = "skor_konversi_2pl"
+
+    if "skor_konversi_3pl" in df_master.columns and df_master["skor_konversi_3pl"].notna().any():
+        available_methods["Nilai Konversi (IRT - 3PL)"] = "skor_konversi_3pl"
+
+    # Fallback jika belum ada skor konversi
+    if not available_methods:
+        if "skor_mentah" in df_master.columns:
+            available_methods["Skor Mentah (Klasik/CTT)"] = "skor_mentah"
+
+    if not available_methods:
+        st.error("❌ Tidak ditemukan kolom nilai konversi yang dapat dianalisis.")
+        return
+
+    # --- 4. PILIHAN METODE ANALISIS ---
+    st.markdown("#### ⚙️ Pengaturan Metode Analisis")
+    selected_method_label = st.radio(
+        "Pilih Metode & Metrik Nilai yang Ingin Dianalisis:",
+        options=list(available_methods.keys()),
+        horizontal=True,
+        key="radio_sekolah_method",
+    )
+    selected_metric_col = available_methods[selected_method_label]
+
+    st.divider()
 
     # --- 5. FILTER WILAYAH & JUMLAH PESERTA ---
     st.markdown("#### 🔍 Filter Wilayah & Jumlah Peserta")

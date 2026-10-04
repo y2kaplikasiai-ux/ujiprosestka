@@ -208,12 +208,24 @@ def calculate_ctt_metrics(X_mat, item_cols, total_scores):
 
 def run_ctt_analysis(df_matrix, df_respon=None, df_kunci=None):
     """Fungsi utama analisis CTT yang menangani missing value (NaN) dengan benar."""
-    raw_item_cols = get_item_columns(df_matrix)
+    import streamlit as st
+
+    target_items_df = df_matrix
+    raw_item_cols = get_item_columns(target_items_df)
     
+    # Jika df_matrix adalah format big-data (tidak ada kolom butir langsung), gunakan sample_items_matrix
+    if not raw_item_cols:
+        if hasattr(df_matrix, "attrs") and "sample_items_matrix" in df_matrix.attrs:
+            target_items_df = df_matrix.attrs["sample_items_matrix"]
+            raw_item_cols = get_item_columns(target_items_df)
+        elif "df_matrix_sample" in st.session_state and st.session_state["df_matrix_sample"] is not None:
+            target_items_df = st.session_state["df_matrix_sample"]
+            raw_item_cols = get_item_columns(target_items_df)
+
     # Hanya sertakan kolom soal yang memiliki setidaknya 1 nilai numerik valid (bukan full NaN)
     item_cols = [
         c for c in raw_item_cols
-        if pd.to_numeric(df_matrix[c], errors='coerce').notna().sum() > 0
+        if pd.to_numeric(target_items_df[c], errors='coerce').notna().sum() > 0
     ]
     
     n_items = len(item_cols)
@@ -228,36 +240,125 @@ def run_ctt_analysis(df_matrix, df_respon=None, df_kunci=None):
             'df_result': df_matrix,
         }
 
-    # Matriks numerik (float32) yang mendukung np.nan secara aman
-    X_mat = df_matrix[item_cols].apply(pd.to_numeric, errors='coerce').to_numpy(dtype=np.float32)
+    # CEK APAKAH TERSEDIA SAMPEL PER MATA PELAJARAN
+    mapel_samples = getattr(df_matrix, "attrs", {}).get("mapel_samples")
+    if mapel_samples and isinstance(mapel_samples, dict) and len(mapel_samples) > 0:
+        all_item_stats = []
+        alpha_by_mapel = {}
 
-    # Hitung skor mentah per siswa (mengabaikan NaN)
-    skor_mentah = np.nansum(X_mat, axis=1)
+        for mpl_name, df_mpl in mapel_samples.items():
+            m_raw_cols = get_item_columns(df_mpl)
+            m_item_cols = [
+                c for c in m_raw_cols
+                if pd.to_numeric(df_mpl[c], errors='coerce').notna().sum() > 0
+            ]
+            if not m_item_cols:
+                continue
+
+            X_m = df_mpl[m_item_cols].apply(pd.to_numeric, errors='coerce').to_numpy(dtype=np.float32)
+            skor_m = np.nansum(X_m, axis=1)
+
+            # Hitung metrik CTT per butir untuk mata pelajaran ini
+            stats_m = calculate_ctt_metrics(X_m, m_item_cols, total_scores=skor_m)
+            stats_m["mapel"] = mpl_name
+            all_item_stats.append(stats_m)
+
+            # Hitung Cronbach's Alpha spesifik mata pelajaran ini
+            n_k = len(m_item_cols)
+            if n_k > 1 and len(df_mpl) > 1:
+                item_vars = np.nanvar(X_m, axis=0, ddof=1).sum()
+                tot_var = float(np.var(skor_m, ddof=1))
+                if tot_var > 0 and item_vars < tot_var:
+                    a_val = (n_k / (n_k - 1)) * (1.0 - (item_vars / tot_var))
+                    alpha_by_mapel[mpl_name] = round(float(a_val), 3)
+                else:
+                    a_pkg = calculate_reliability_by_package(df_mpl, df_respon)
+                    alpha_by_mapel[mpl_name] = a_pkg if a_pkg is not None else 0.0
+            else:
+                alpha_by_mapel[mpl_name] = 0.0
+
+        if all_item_stats:
+            df_item_stats = pd.concat(all_item_stats, ignore_index=True)
+        else:
+            df_item_stats = pd.DataFrame()
+
+        overall_alpha = round(float(np.mean(list(alpha_by_mapel.values()))), 3) if alpha_by_mapel else 0.0
+
+        df_result = df_matrix.copy()
+        if 'Nilai_Konversi' not in df_result.columns and 'skor_mentah' in df_result.columns and 'Jumlah_Soal' in df_result.columns:
+            df_result['Nilai_Konversi'] = np.where(
+                df_result['Jumlah_Soal'] > 0,
+                np.round((df_result['skor_mentah'] / df_result['Jumlah_Soal']) * 100, 2),
+                0.0,
+            )
+        konversi_scores = df_result['Nilai_Konversi'] if 'Nilai_Konversi' in df_result.columns else pd.Series([0.0])
+
+        df_distractor = calculate_distractor_analysis(df_respon, df_kunci, df_result)
+        mean_val = round(float(konversi_scores.mean()), 2) if len(konversi_scores) > 0 else 0.0
+        std_val = round(float(konversi_scores.std()), 2) if len(konversi_scores) > 0 else 0.0
+        max_val = round(float(konversi_scores.max()), 2) if len(konversi_scores) > 0 else 0.0
+        min_val = round(float(konversi_scores.min()), 2) if len(konversi_scores) > 0 else 0.0
+        med_val = round(float(konversi_scores.median()), 2) if len(konversi_scores) > 0 else 0.0
+
+        summary_stats = {
+            'cronbach_alpha': overall_alpha,
+            'n_peserta': len(df_matrix),
+            'n_soal': len(df_item_stats),
+            'n_items': len(df_item_stats),
+            'mean_score': mean_val,
+            'std_score': std_val,
+            'max_score': max_val,
+            'min_score': min_val,
+            'median_score': med_val,
+            'Jumlah_Peserta': len(df_matrix),
+            'Rata_Rata': mean_val,
+            'Standar_Deviasi': std_val,
+            'Nilai_Tertinggi': max_val,
+            'Nilai_Terendah': min_val,
+            'Median': med_val,
+        }
+
+        return {
+            'cronbach_alpha': overall_alpha,
+            'alpha_by_mapel': alpha_by_mapel,
+            'item_stats': df_item_stats,
+            'distractor_stats': df_distractor,
+            'summary': summary_stats,
+            'df_result': df_result,
+        }
+
+    # Matriks numerik (float32) yang mendukung np.nan secara aman dari target_items_df
+    X_mat = target_items_df[item_cols].apply(pd.to_numeric, errors='coerce').to_numpy(dtype=np.float32)
+
+    # Hitung skor mentah per siswa pada sampel/matriks butir
+    skor_mentah_sample = np.nansum(X_mat, axis=1)
 
     df_result = df_matrix.copy()
-    df_result['Skor_Mentah'] = skor_mentah
+    if 'skor_mentah' not in df_result.columns and 'Skor_Mentah' not in df_result.columns:
+        df_result['Skor_Mentah'] = skor_mentah_sample if len(df_result) == len(skor_mentah_sample) else 0
 
     # Jumlah soal riil yang dikerjakan masing-masing siswa
-    if 'Jumlah_Soal' in df_matrix.columns:
-        jml_soal_user = df_matrix['Jumlah_Soal'].values
-    else:
-        jml_soal_user = np.sum(~np.isnan(X_mat), axis=1)
+    if 'Jumlah_Soal' not in df_result.columns and 'jumlah_soal' not in df_result.columns:
+        df_result['Jumlah_Soal'] = np.sum(~np.isnan(X_mat), axis=1) if len(df_result) == len(X_mat) else len(item_cols)
 
-    # Nilai Konversi skala 0 - 100 berdasarkan jumlah soal masing-masing siswa
-    df_result['Nilai_Konversi'] = np.where(
-        jml_soal_user > 0,
-        np.round((skor_mentah / jml_soal_user) * 100, 2),
-        0.0,
-    )
+    # Nilai Konversi skala 0 - 100
+    if 'Nilai_Konversi' not in df_result.columns:
+        jml_soal_user = df_result['Jumlah_Soal'].values
+        skor_user = df_result['skor_mentah'].values if 'skor_mentah' in df_result.columns else df_result['Skor_Mentah'].values
+        df_result['Nilai_Konversi'] = np.where(
+            jml_soal_user > 0,
+            np.round((skor_user / jml_soal_user) * 100, 2),
+            0.0,
+        )
 
-    konversi_scores = df_result['Nilai_Konversi']
+    konversi_scores = df_result['Nilai_Konversi'] if 'Nilai_Konversi' in df_result.columns else pd.Series([0.0])
 
     # Perhitungan Cronbach's Alpha yang aman dari hasil minus akibat sparse matrix
     cronbach_alpha = 0.0
-    if n_items > 1 and n_persons > 1:
+    if n_items > 1 and len(target_items_df) > 1:
         # Varians butir hanya dari data valid (bukan NaN)
         item_variances = np.nanvar(X_mat, axis=0, ddof=1).sum()
-        total_variance = float(np.var(skor_mentah, ddof=1))
+        total_variance = float(np.var(skor_mentah_sample, ddof=1))
 
         if total_variance > 0 and item_variances < total_variance:
             val_alpha = (n_items / (n_items - 1)) * (
@@ -267,11 +368,11 @@ def run_ctt_analysis(df_matrix, df_respon=None, df_kunci=None):
         else:
             # Apabila item_variances > total_variance akibat sifat multi-paket/sparse
             # Lakukan fallback hitung rata-rata Alpha per paket
-            alpha_by_pkg = calculate_reliability_by_package(df_matrix, df_respon)
+            alpha_by_pkg = calculate_reliability_by_package(target_items_df, df_respon)
             cronbach_alpha = alpha_by_pkg if alpha_by_pkg is not None else 0.0
 
     # Hitung metrik CTT per butir
-    df_item_stats = calculate_ctt_metrics(X_mat, item_cols, total_scores=skor_mentah)
+    df_item_stats = calculate_ctt_metrics(X_mat, item_cols, total_scores=skor_mentah_sample)
 
     # Sertakan metadata mapel jika tersedia dari df_kunci atau df_matrix
     if df_kunci is not None and not df_kunci.empty:

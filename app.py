@@ -15,6 +15,10 @@ from db_helper import (
     prepare_and_save_analysis,
     check_db_status,
     get_active_config,
+    get_database_status,
+    reset_database,
+    load_master_data_from_db,
+    save_master_data_to_db,
 )
 from irt_analysis import run_irt_analysis
 from scoring import extract_active_soal_from_respon, process_scoring
@@ -212,7 +216,7 @@ if not render_login_gate():
 col_hdr_title, col_hdr_logout = st.columns([8.2, 1.8])
 with col_hdr_title:
     st.markdown(
-        '<div class="main-header">📊 Dashboard Pengolahan & Analisis Psikometri TKA (v.7)</div>',
+        '<div class="main-header">📊 Dashboard Pengolahan & Analisis Psikometri TKA (v.3)</div>',
         unsafe_allow_html=True,
     )
     st.markdown(
@@ -710,6 +714,9 @@ if uploaded_files.get("mapel") is not None and not uploaded_files["mapel"].empty
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Status Deteksi Berkas:")
 
+# Cek ketersediaan tabel master di database MySQL
+db_stat = get_database_status()
+
 configs_info = [
     ("respon", "1. Lembar Respon", True),
     ("kunci", "2. Kunci Jawaban", True),
@@ -724,25 +731,71 @@ for key, label, req in configs_info:
     req_mark = " <span style='color:red;'>*</span>" if req else ""
     obj = uploaded_files[key]
     count_files = len(raw_file_collections[key])
-    
+
     if obj is not None and not obj.empty:
         file_desc = getattr(obj, "name", f"Gabungan_{key.upper()}_({count_files}_files)")
         num_rows = len(obj)
         st.sidebar.markdown(f"✅ **{label}**: `{file_desc}` — **{num_rows:,} baris**".replace(",", "."))
     else:
-        st.sidebar.markdown(
-            f"❌ <span style='color:gray;'>{label}{req_mark}: Belum terdeteksi</span>",
-            unsafe_allow_html=True,
-        )
+        # Cek apakah data tersedia dari Database MySQL (Master Tersimpan)
+        has_in_db = False
+        db_desc = ""
+        if key == "kunci" and db_stat.get("n_master_kunci", 0) > 0:
+            has_in_db = True
+            db_desc = f"Tersimpan di Database ({db_stat['n_master_kunci']:,} butir)".replace(",", ".")
+        elif key == "biodata" and db_stat.get("n_master_biodata", 0) > 0:
+            has_in_db = True
+            db_desc = f"Tersimpan di Database ({db_stat['n_master_biodata']:,} siswa)".replace(",", ".")
+        elif key == "sekolah" and db_stat.get("n_master_sekolah", 0) > 0:
+            has_in_db = True
+            db_desc = f"Tersimpan di Database ({db_stat['n_master_sekolah']:,} sekolah)".replace(",", ".")
+        elif key == "mapel" and db_stat.get("n_master_mapel", 0) > 0:
+            has_in_db = True
+            db_desc = f"Tersimpan di Database ({db_stat['n_master_mapel']:,} mapel)".replace(",", ".")
+
+        if has_in_db:
+            st.sidebar.markdown(f"💾 **{label}**: <span style='color:#38bdf8;'>*{db_desc}*</span>", unsafe_allow_html=True)
+        else:
+            st.sidebar.markdown(
+                f"❌ <span style='color:gray;'>{label}{req_mark}: Belum terdeteksi</span>",
+                unsafe_allow_html=True,
+            )
 
 st.sidebar.markdown("---")
 btn_process = st.sidebar.button(
     "🚀 Proses Data", type="primary", use_container_width=True
 )
 
-has_minimal_files = (uploaded_files["respon"] is not None) and (
-    uploaded_files["kunci"] is not None
-)
+# Fitur Reset Database (2 Opsi: Hapus Respon Saja atau Reset Total)
+with st.sidebar.expander("🗑️ Kelola & Reset Database", expanded=False):
+    st.caption("Gunakan opsi ini jika ingin memulai pengolahan baru dari awal:")
+    reset_choice = st.radio(
+        "Pilihan Mode Reset:",
+        options=[
+            "Hapus Respon & Hasil Saja (Master Siswa/Sekolah Tetap Tersimpan)",
+            "Reset Total Database (Hapus Semua Tabel & Master)"
+        ],
+        key="radio_reset_db_choice"
+    )
+    is_total_reset = "Reset Total" in reset_choice
+    chk_confirm_reset = st.checkbox("Konfirmasi: Saya yakin ingin menghapus data", key="chk_confirm_reset_action")
+    btn_style = "primary" if is_total_reset else "secondary"
+    
+    if st.button("⚠️ Eksekusi Reset Database", type=btn_style, use_container_width=True, disabled=not chk_confirm_reset):
+        mode_arg = "full" if is_total_reset else "response_only"
+        ok_rst, msg_rst = reset_database(mode=mode_arg)
+        if ok_rst:
+            for k in list(st.session_state.keys()):
+                if k not in ["authenticated"]:
+                    del st.session_state[k]
+            st.sidebar.success(msg_rst)
+            time.sleep(1)
+            st.rerun()
+        else:
+            st.sidebar.error(msg_rst)
+
+has_kunci_available = (uploaded_files["kunci"] is not None and not uploaded_files["kunci"].empty) or (db_stat.get("n_master_kunci", 0) > 0)
+has_minimal_files = (uploaded_files["respon"] is not None and not uploaded_files["respon"].empty) and has_kunci_available
 
 
 def filter_kunci_by_respon_kode(df_respon, df_kunci):
@@ -790,8 +843,21 @@ def filter_kunci_by_respon_kode(df_respon, df_kunci):
 
 # 5. Logika Eksekusi Tombol Proses Data
 if btn_process:
-    if not has_minimal_files:
-        st.sidebar.error("❌ Berkas Lembar Respon dan Kunci Jawaban wajib diunggah!")
+    # Sinkronisasi Master Data: Ambil dari Database jika tidak diunggah pengguna
+    db_masters = load_master_data_from_db()
+    for m_key in ["kunci", "biodata", "sekolah", "mapel"]:
+        if uploaded_files.get(m_key) is None or uploaded_files[m_key].empty:
+            if m_key in db_masters and db_masters[m_key] is not None and not db_masters[m_key].empty:
+                uploaded_files[m_key] = db_masters[m_key]
+
+    # Simpan berkas master yang baru diunggah ke DB untuk penggunaan berikutnya
+    save_master_data_to_db(uploaded_files)
+
+    has_kunci_ready = (uploaded_files.get("kunci") is not None and not uploaded_files["kunci"].empty)
+    has_respon_ready = (uploaded_files.get("respon") is not None and not uploaded_files["respon"].empty)
+
+    if not (has_respon_ready and has_kunci_ready):
+        st.sidebar.error("❌ Berkas Lembar Respon dan Kunci Jawaban wajib tersedia (diunggah atau dari database)!")
     else:
         st.session_state["data_processed"] = False
         st.session_state["val_result"] = None
@@ -892,6 +958,8 @@ if btn_process:
                 )
                 dfs["kunci"] = df_kunci_filtered
                 df_matrix = process_scoring(dfs["respon"], df_kunci_filtered)
+                if hasattr(df_matrix, "attrs") and "sample_items_matrix" in df_matrix.attrs:
+                    st.session_state["df_matrix_sample"] = df_matrix.attrs["sample_items_matrix"]
 
                 mpl_lookup_active = st.session_state.get("mapel_dict") or get_mapel_lookup_dict(dfs.get("mapel"))
                 if "mapel" in df_matrix.columns and mpl_lookup_active:
@@ -915,112 +983,79 @@ if btn_process:
                 t3_dur = time.time() - t3_start
                 update_step(2, "complete", t3_dur)
 
-                # --- LANGKAH 4: PROSES MODEL IRT (SELURUH PESERTA) ---
+                # --- LANGKAH 4: PROSES MODEL IRT (ESTIMASI TEROPTIMASI) ---
                 update_step(3, "running")
                 t4_start = time.time()
                 progress_bar.progress(65)
 
-                df_irt_input = df_matrix.copy()
+                if hasattr(df_matrix, "attrs") and "sample_items_matrix" in df_matrix.attrs:
+                    df_irt_input = df_matrix.attrs["sample_items_matrix"].copy()
+                elif "df_matrix_sample" in st.session_state and st.session_state["df_matrix_sample"] is not None:
+                    df_irt_input = st.session_state["df_matrix_sample"].copy()
+                else:
+                    df_irt_input = df_matrix.copy()
 
-                non_item_cols = [
-                    c
-                    for c in df_irt_input.columns
-                    if c.lower()
-                    in [
-                        "username",
-                        "user_id",
-                        "id_peserta",
-                        "nama",
-                        "mapel",
-                        "mata_pelajaran",
-                        "subject",
-                        "kode_mapel",
-                        "kd_mapel",
-                        "kode_soal",
-                        "kode_paket",
-                        "kd_paket",
-                        "paket",
-                        "total_skor",
-                        "skor",
-                        "skor_mentah",
-                        "nilai_konversi",
-                        "skor_konversi",
-                        "jumlah_soal",
-                        "_school_key",
-                        "_prop_key_user",
-                        "kd_prop",
-                        "kode_provinsi",
-                    ]
-                    or any(
-                        kw in str(c).strip().lower()
-                        for kw in [
-                            "username",
-                            "user_id",
-                            "mapel",
-                            "paket",
-                            "sekolah",
-                            "kabupaten",
-                            "provinsi",
-                            "jumlah_soal",
-                            "skor",
-                            "konversi",
-                        ]
-                    )
-                ]
-                item_cols = [
-                    c for c in df_irt_input.columns
-                    if c not in non_item_cols
-                    and (df_irt_input[c].dtype != object or pd.to_numeric(df_irt_input[c], errors="coerce").notna().sum() > 0)
-                ]
+                if len(df_irt_input) > 50000:
+                    df_irt_input = df_irt_input.sample(n=50000, random_state=42).copy()
 
-                # MEMORY OPTIMIZATION: Chunks processing to avoid ArrayMemoryError for huge datasets (~3.4M rows)
-                if item_cols:
-                    chunk_size = 500000
-                    if len(df_irt_input) > chunk_size:
-                        processed_chunks = []
-                        for start_idx in range(0, len(df_irt_input), chunk_size):
-                            chunk = df_irt_input.iloc[start_idx : start_idx + chunk_size].copy()
-                            chunk[item_cols] = (
-                                chunk[item_cols]
-                                .apply(pd.to_numeric, errors="coerce")
-                                .fillna(0)
-                                .astype(np.float32)
-                            )
-                            processed_chunks.append(chunk)
-                        df_irt_input = pd.concat(processed_chunks, ignore_index=True)
-                        del processed_chunks
-                    else:
-                        df_irt_input[item_cols] = (
-                            df_irt_input[item_cols]
-                            .apply(pd.to_numeric, errors="coerce")
-                            .fillna(0)
-                            .astype(np.float32)
-                        )
-
+                mapel_samples = getattr(df_matrix, "attrs", {}).get("mapel_samples")
                 irt_dict = {}
-                for m_type in ["Rasch", "1PL", "2PL", "3PL"]:
-                    try:
-                        res = run_irt_analysis(
-                            df_irt_input,
-                            model_type=m_type,
-                            min_scale=scale_config["min"],
-                            max_scale=scale_config["max"],
-                            mean_scale=scale_config["mean"],
-                            sd_scale=scale_config["sd"],
-                        )
-                        
-                        df_p_mod = res.get("person_params", pd.DataFrame())
 
-                        m_key = m_type.lower()
+                for m_type in ["Rasch", "1PL", "2PL", "3PL"]:
+                    m_key = m_type.lower()
+                    if mapel_samples and isinstance(mapel_samples, dict) and len(mapel_samples) > 0:
+                        all_p = []
+                        all_items = []
+                        combined_fit = {}
+                        for mpl_name, df_mpl in mapel_samples.items():
+                            try:
+                                res_m = run_irt_analysis(
+                                    df_mpl,
+                                    model_type=m_type,
+                                    min_scale=scale_config["min"],
+                                    max_scale=scale_config["max"],
+                                    mean_scale=scale_config["mean"],
+                                    sd_scale=scale_config["sd"],
+                                )
+                                df_p = res_m.get("person_params", pd.DataFrame())
+                                df_i = res_m.get("item_params", pd.DataFrame())
+                                if not df_p.empty:
+                                    df_p["mapel"] = mpl_name
+                                    all_p.append(df_p)
+                                if not df_i.empty:
+                                    df_i["mapel"] = mpl_name
+                                    all_items.append(df_i)
+                                combined_fit[mpl_name] = res_m.get("fit_stats", {})
+                            except Exception as ex_m:
+                                pass
+                        
+                        df_p_mod = pd.concat(all_p, ignore_index=True) if all_p else pd.DataFrame()
+                        df_i_mod = pd.concat(all_items, ignore_index=True) if all_items else pd.DataFrame()
                         irt_dict[m_key] = {
                             "df_person": df_p_mod,
-                            "item_params": res.get("item_params", pd.DataFrame()),
-                            "fit_stats": res.get("fit_stats", {}),
+                            "item_params": df_i_mod,
+                            "fit_stats": combined_fit,
                         }
-                    except Exception as ex_irt:
-                        st.warning(
-                            f"Catatan: Analisis IRT {m_type} dilewati/mengalami kendala: {ex_irt}"
-                        )
+                    else:
+                        try:
+                            res = run_irt_analysis(
+                                df_irt_input,
+                                model_type=m_type,
+                                min_scale=scale_config["min"],
+                                max_scale=scale_config["max"],
+                                mean_scale=scale_config["mean"],
+                                sd_scale=scale_config["sd"],
+                            )
+                            df_p_mod = res.get("person_params", pd.DataFrame())
+                            irt_dict[m_key] = {
+                                "df_person": df_p_mod,
+                                "item_params": res.get("item_params", pd.DataFrame()),
+                                "fit_stats": res.get("fit_stats", {}),
+                            }
+                        except Exception as ex_irt:
+                            st.warning(
+                                f"Catatan: Analisis IRT {m_type} dilewati/mengalami kendala: {ex_irt}"
+                            )
 
                 st.session_state["irt_results"] = irt_dict
                 t4_dur = time.time() - t4_start

@@ -260,6 +260,66 @@ def init_db_tables() -> bool:
                 )
             )
 
+            # 5. Tabel Master Sekolah
+            conn.execute(
+                text(
+                    """
+                CREATE TABLE IF NOT EXISTS tb_master_sekolah (
+                    kode_sekolah VARCHAR(50) PRIMARY KEY,
+                    nama_sekolah VARCHAR(255),
+                    nama_kabupaten VARCHAR(100),
+                    nama_provinsi VARCHAR(100),
+                    kode_provinsi VARCHAR(10)
+                );
+            """
+                )
+            )
+
+            # 6. Tabel Master Biodata Siswa
+            conn.execute(
+                text(
+                    """
+                CREATE TABLE IF NOT EXISTS tb_master_biodata (
+                    username VARCHAR(100) PRIMARY KEY,
+                    nama VARCHAR(255),
+                    kode_sekolah VARCHAR(50),
+                    nama_sekolah VARCHAR(255),
+                    nama_kabupaten VARCHAR(100),
+                    nama_provinsi VARCHAR(100),
+                    kd_prop VARCHAR(10),
+                    INDEX idx_bio_sekolah (kode_sekolah)
+                );
+            """
+                )
+            )
+
+            # 7. Tabel Master Kunci Jawaban
+            conn.execute(
+                text(
+                    """
+                CREATE TABLE IF NOT EXISTS tb_master_kunci (
+                    kode_soal VARCHAR(100) NOT NULL,
+                    mapel VARCHAR(100) NOT NULL DEFAULT 'UMUM',
+                    kunci VARCHAR(20),
+                    PRIMARY KEY (kode_soal, mapel),
+                    INDEX idx_mkunci_mapel (mapel)
+                );
+            """
+                )
+            )
+
+            # 8. Tabel Master Mapel
+            conn.execute(
+                text(
+                    """
+                CREATE TABLE IF NOT EXISTS tb_master_mapel (
+                    kode_mapel VARCHAR(50) PRIMARY KEY,
+                    nama_mapel VARCHAR(100)
+                );
+            """
+                )
+            )
+
         return True
     except Exception as e:
         print(f"Gagal inisialisasi tabel database: {e}")
@@ -375,16 +435,48 @@ def prepare_and_save_analysis(
             df_soal_clean = df_soal_clean[valid_soal_cols]
 
         with engine.begin() as conn:
-            # 1. Peserta & Skor
+            # 1. Peserta & Skor (Mendukung mode Incremental per Mata Pelajaran)
             if df_peserta_clean is not None and not df_peserta_clean.empty:
-                conn.execute(text("TRUNCATE TABLE tb_peserta_skor;"))
+                mapels_active = [
+                    str(m).strip()
+                    for m in df_peserta_clean["mapel"].dropna().unique()
+                    if str(m).strip()
+                ]
+
+                # Hapus data sebelumnya hanya untuk mata pelajaran yang aktif diproses saat ini
+                if mapels_active:
+                    for m_act in mapels_active:
+                        conn.execute(
+                            text("DELETE FROM tb_peserta_skor WHERE mapel = :m;"),
+                            {"m": m_act},
+                        )
+                else:
+                    conn.execute(text("TRUNCATE TABLE tb_peserta_skor;"))
+
                 df_peserta_clean.to_sql(
-                    "tb_peserta_skor", conn, if_exists="append", index=False, chunksize=5000
+                    "tb_peserta_skor",
+                    conn,
+                    if_exists="append",
+                    index=False,
+                    chunksize=10000,
                 )
 
             # 2. Parameter Soal
             if df_soal_clean is not None and not df_soal_clean.empty:
-                conn.execute(text("TRUNCATE TABLE tb_soal_parameter;"))
+                mapels_soal = [
+                    str(m).strip()
+                    for m in df_soal_clean["mapel"].dropna().unique()
+                    if str(m).strip()
+                ]
+                if mapels_soal:
+                    for m_soal in mapels_soal:
+                        conn.execute(
+                            text("DELETE FROM tb_soal_parameter WHERE mapel = :m;"),
+                            {"m": m_soal},
+                        )
+                else:
+                    conn.execute(text("TRUNCATE TABLE tb_soal_parameter;"))
+
                 df_soal_clean.to_sql(
                     "tb_soal_parameter", conn, if_exists="append", index=False
                 )
@@ -396,16 +488,290 @@ def prepare_and_save_analysis(
                     "tb_model_summary", conn, if_exists="append", index=False
                 )
 
-            # 4. Agregasi Sekolah (HANYA DITIMPA JIKA DATANYA ADA)
-            if df_sekolah_clean is not None and not df_sekolah_clean.empty:
+            # 4. Agregasi Sekolah (Hitung ulang otomatis dari akumulasi seluruh mapel di tb_peserta_skor)
+            try:
                 conn.execute(text("TRUNCATE TABLE tb_sekolah_agregasi;"))
-                df_sekolah_clean.to_sql(
-                    "tb_sekolah_agregasi", conn, if_exists="append", index=False
+                conn.execute(
+                    text(
+                        """
+                    INSERT INTO tb_sekolah_agregasi (
+                        kode_sekolah, nama_sekolah, nama_kabupaten, nama_provinsi,
+                        jumlah_peserta, rata_skor_mentah, rata_skor_ctt,
+                        rata_skor_rasch, rata_skor_1pl, rata_skor_2pl, rata_skor_3pl
+                    )
+                    SELECT 
+                        kode_sekolah,
+                        MAX(COALESCE(nama_sekolah, kode_sekolah)) as nama_sekolah,
+                        MAX(COALESCE(nama_kabupaten, '-')) as nama_kabupaten,
+                        MAX(COALESCE(nama_provinsi, '-')) as nama_provinsi,
+                        COUNT(DISTINCT username) as jumlah_peserta,
+                        ROUND(AVG(skor_mentah), 2) as rata_skor_mentah,
+                        ROUND(AVG(skor_konversi_ctt), 2) as rata_skor_ctt,
+                        ROUND(AVG(skor_konversi_rasch), 2) as rata_skor_rasch,
+                        ROUND(AVG(skor_konversi_1pl), 2) as rata_skor_1pl,
+                        ROUND(AVG(skor_konversi_2pl), 2) as rata_skor_2pl,
+                        ROUND(AVG(skor_konversi_3pl), 2) as rata_skor_3pl
+                    FROM tb_peserta_skor
+                    WHERE kode_sekolah IS NOT NULL AND TRIM(kode_sekolah) != ''
+                    GROUP BY kode_sekolah;
+                """
+                    )
                 )
+            except Exception as e_agg:
+                # Fallback jika query agregasi SQL mengalami kendala
+                if df_sekolah_clean is not None and not df_sekolah_clean.empty:
+                    df_sekolah_clean.to_sql(
+                        "tb_sekolah_agregasi", conn, if_exists="append", index=False
+                    )
 
         return True, "Berhasil menyimpan seluruh data ke MySQL Server."
     except Exception as e:
         return False, f"Kendala penyimpanan DB: {e}"
+
+
+def reset_database(mode: str = "response_only") -> tuple[bool, str]:
+    """
+    Mereset database.
+    - 'response_only': Mengosongkan data respon, skor, butir, dan agregasi sekolah.
+                       Tabel master biodata, sekolah, mapel, dan kunci TETAP AMAN.
+    - 'full': Mengosongkan seluruh tabel database termasuk master.
+    """
+    try:
+        engine = get_db_connection()
+        if engine is None:
+            return False, "Tidak dapat terhubung ke MySQL Server."
+
+        # Pastikan seluruh struktur tabel sudah diinisialisasi terlebih dahulu
+        try:
+            init_db_tables()
+        except Exception:
+            pass
+
+        tables_to_clear = [
+            "tb_peserta_skor",
+            "tb_soal_parameter",
+            "tb_sekolah_agregasi",
+            "tb_model_summary",
+        ]
+        if mode == "full":
+            tables_to_clear.extend([
+                "tb_master_biodata",
+                "tb_master_sekolah",
+                "tb_master_kunci",
+                "tb_master_mapel",
+            ])
+
+        with engine.begin() as conn:
+            for tbl in tables_to_clear:
+                try:
+                    conn.execute(text(f"TRUNCATE TABLE {tbl};"))
+                except Exception:
+                    try:
+                        conn.execute(text(f"DELETE FROM {tbl};"))
+                    except Exception:
+                        pass
+
+        if mode == "full":
+            msg = "Berhasil melakukan Reset Total Database (Semua data respon & tabel master telah dibersihkan)."
+        else:
+            msg = "Berhasil membersihkan data respon & hasil analisis. Tabel master siswa & sekolah tetap aman tersimpan."
+        return True, msg
+    except Exception as e:
+        return False, f"Gagal mereset database: {e}"
+
+
+def save_master_data_to_db(dfs: dict) -> tuple[bool, str]:
+    """Menyimpan berkas master (biodata, sekolah, kunci, mapel) ke MySQL jika diunggah."""
+    if not dfs or not isinstance(dfs, dict):
+        return True, "Tidak ada data master."
+    try:
+        engine = get_db_connection()
+        if engine is None:
+            return False, "Koneksi DB gagal."
+
+        with engine.begin() as conn:
+            # 1. Master Sekolah
+            if "sekolah" in dfs and dfs["sekolah"] is not None and not dfs["sekolah"].empty:
+                df_sek = dfs["sekolah"].copy()
+                df_sek.columns = [str(c).strip().lower() for c in df_sek.columns]
+                col_k = next((c for c in df_sek.columns if "sekolah" in c and ("kode" in c or "id" in c or "npsn" in c)), df_sek.columns[0])
+                col_n = next((c for c in df_sek.columns if "nama" in c and "sekolah" in c), None)
+                col_kab = next((c for c in df_sek.columns if "kabupaten" in c or "kota" in c), None)
+                col_prov = next((c for c in df_sek.columns if "provinsi" in c or "propinsi" in c), None)
+                col_kdp = next((c for c in df_sek.columns if "kd_prop" in c or "kode_prov" in c), None)
+
+                df_sek_save = pd.DataFrame()
+                df_sek_save["kode_sekolah"] = df_sek[col_k].astype(str).str.strip().str.upper()
+                df_sek_save["nama_sekolah"] = df_sek[col_n].astype(str).str.strip() if col_n else df_sek_save["kode_sekolah"]
+                df_sek_save["nama_kabupaten"] = df_sek[col_kab].astype(str).str.strip() if col_kab else "-"
+                df_sek_save["nama_provinsi"] = df_sek[col_prov].astype(str).str.strip() if col_prov else "-"
+                df_sek_save["kode_provinsi"] = df_sek[col_kdp].astype(str).str.strip() if col_kdp else "-"
+                df_sek_save = df_sek_save.drop_duplicates(subset=["kode_sekolah"])
+
+                conn.execute(text("TRUNCATE TABLE tb_master_sekolah;"))
+                df_sek_save.to_sql("tb_master_sekolah", conn, if_exists="append", index=False, chunksize=5000)
+
+            # 2. Master Biodata
+            if "biodata" in dfs and dfs["biodata"] is not None and not dfs["biodata"].empty:
+                df_bio = dfs["biodata"].copy()
+                df_bio.columns = [str(c).strip().lower() for c in df_bio.columns]
+                col_u = next((c for c in df_bio.columns if str(c) in ["username", "user_id", "id_peserta", "nisn", "id"]), df_bio.columns[0])
+                col_n = next((c for c in df_bio.columns if "nama" in c and "sekolah" not in c and "kabupaten" not in c and "provinsi" not in c), None)
+                col_sek = next((c for c in df_bio.columns if "sekolah" in c), None)
+                col_kab = next((c for c in df_bio.columns if "kabupaten" in c or "kota" in c), None)
+                col_prov = next((c for c in df_bio.columns if "provinsi" in c or "propinsi" in c), None)
+                col_kdp = next((c for c in df_bio.columns if "kd_prop" in c or "kode_prov" in c), None)
+
+                df_bio_save = pd.DataFrame()
+                df_bio_save["username"] = df_bio[col_u].astype(str).str.strip()
+                df_bio_save["nama"] = df_bio[col_n].astype(str).str.strip() if col_n else "-"
+                df_bio_save["kode_sekolah"] = df_bio[col_sek].astype(str).str[:9].str.upper() if col_sek else "-"
+                df_bio_save["nama_sekolah"] = df_bio[col_sek].astype(str).str.strip() if col_sek else "-"
+                df_bio_save["nama_kabupaten"] = df_bio[col_kab].astype(str).str.strip() if col_kab else "-"
+                df_bio_save["nama_provinsi"] = df_bio[col_prov].astype(str).str.strip() if col_prov else "-"
+                df_bio_save["kd_prop"] = df_bio[col_kdp].astype(str).str.strip() if col_kdp else "-"
+                df_bio_save = df_bio_save.drop_duplicates(subset=["username"])
+
+                conn.execute(text("TRUNCATE TABLE tb_master_biodata;"))
+                df_bio_save.to_sql("tb_master_biodata", conn, if_exists="append", index=False, chunksize=10000)
+
+            # 3. Master Kunci
+            if "kunci" in dfs and dfs["kunci"] is not None and not dfs["kunci"].empty:
+                df_k = dfs["kunci"].copy()
+                df_k.columns = [str(c).strip().lower() for c in df_k.columns]
+                col_s = next((c for c in df_k.columns if any(kw in c for kw in ["kode_soal", "id_soal", "soal", "kd_soal"])), df_k.columns[0])
+                col_m = next((c for c in df_k.columns if any(kw in c for kw in ["mapel", "mata_pelajaran", "subject"])), None)
+                col_ans = next((c for c in df_k.columns if any(kw in c for kw in ["kunci", "jawaban", "key"])), df_k.columns[1] if len(df_k.columns)>1 else df_k.columns[0])
+
+                df_k_save = pd.DataFrame()
+                df_k_save["kode_soal"] = df_k[col_s].astype(str).str.strip()
+                df_k_save["mapel"] = df_k[col_m].astype(str).str.strip().str.upper() if col_m else "UMUM"
+                df_k_save["kunci"] = df_k[col_ans].astype(str).str.strip().str.upper()
+                df_k_save = df_k_save.drop_duplicates(subset=["kode_soal", "mapel"])
+
+                for mpl in df_k_save["mapel"].unique():
+                    conn.execute(text("DELETE FROM tb_master_kunci WHERE mapel = :m;"), {"m": mpl})
+                df_k_save.to_sql("tb_master_kunci", conn, if_exists="append", index=False)
+
+            # 4. Master Mapel
+            if "mapel" in dfs and dfs["mapel"] is not None and not dfs["mapel"].empty:
+                df_m = dfs["mapel"].copy()
+                df_m.columns = [str(c).strip().lower() for c in df_m.columns]
+                col_km = next((c for c in df_m.columns if "kode" in c or "id" in c), df_m.columns[0])
+                col_nm = next((c for c in df_m.columns if "nama" in c or "mapel" in c), df_m.columns[1] if len(df_m.columns)>1 else df_m.columns[0])
+
+                df_m_save = pd.DataFrame()
+                df_m_save["kode_mapel"] = df_m[col_km].astype(str).str.strip().str.upper()
+                df_m_save["nama_mapel"] = df_m[col_nm].astype(str).str.strip()
+                df_m_save = df_m_save.drop_duplicates(subset=["kode_mapel"])
+
+                conn.execute(text("TRUNCATE TABLE tb_master_mapel;"))
+                df_m_save.to_sql("tb_master_mapel", conn, if_exists="append", index=False)
+
+        return True, "Data master berhasil disimpan ke MySQL."
+    except Exception as e:
+        return False, f"Gagal simpan data master: {e}"
+
+
+def load_master_data_from_db() -> dict:
+    """Mengambil tabel master dari MySQL jika tidak diunggah oleh pengguna."""
+    res = {}
+    try:
+        engine = get_db_connection()
+        if engine is None:
+            return res
+
+        with engine.connect() as conn:
+            try:
+                df_sek = pd.read_sql_query("SELECT * FROM tb_master_sekolah", conn)
+                if not df_sek.empty:
+                    res["sekolah"] = df_sek
+            except Exception:
+                pass
+
+            try:
+                df_bio = pd.read_sql_query("SELECT * FROM tb_master_biodata", conn)
+                if not df_bio.empty:
+                    res["biodata"] = df_bio
+            except Exception:
+                pass
+
+            try:
+                df_k = pd.read_sql_query("SELECT * FROM tb_master_kunci", conn)
+                if not df_k.empty:
+                    res["kunci"] = df_k
+            except Exception:
+                pass
+
+            try:
+                df_m = pd.read_sql_query("SELECT * FROM tb_master_mapel", conn)
+                if not df_m.empty:
+                    res["mapel"] = df_m
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return res
+
+
+def get_database_status() -> dict:
+    """Mengembalikan ringkasan data yang tersimpan di MySQL."""
+    status = {
+        "connected": False,
+        "n_peserta_skor": 0,
+        "mapels_in_db": [],
+        "n_master_sekolah": 0,
+        "n_master_biodata": 0,
+        "n_master_kunci": 0,
+        "n_master_mapel": 0,
+    }
+    try:
+        engine = get_db_connection()
+        if engine is None:
+            return status
+
+        status["connected"] = True
+        try:
+            init_db_tables()
+        except Exception:
+            pass
+
+        with engine.connect() as conn:
+            try:
+                r1 = conn.execute(text("SELECT COUNT(*), COUNT(DISTINCT mapel) FROM tb_peserta_skor;")).fetchone()
+                status["n_peserta_skor"] = r1[0] or 0
+                if status["n_peserta_skor"] > 0:
+                    r_m = conn.execute(text("SELECT DISTINCT mapel FROM tb_peserta_skor;")).fetchall()
+                    status["mapels_in_db"] = [str(row[0]).strip() for row in r_m if row[0]]
+            except Exception:
+                pass
+
+            try:
+                r2 = conn.execute(text("SELECT COUNT(*) FROM tb_master_sekolah;")).fetchone()
+                status["n_master_sekolah"] = r2[0] or 0
+            except Exception:
+                pass
+
+            try:
+                r3 = conn.execute(text("SELECT COUNT(*) FROM tb_master_biodata;")).fetchone()
+                status["n_master_biodata"] = r3[0] or 0
+            except Exception:
+                pass
+
+            try:
+                r4 = conn.execute(text("SELECT COUNT(*) FROM tb_master_kunci;")).fetchone()
+                status["n_master_kunci"] = r4[0] or 0
+            except Exception:
+                pass
+
+            try:
+                r5 = conn.execute(text("SELECT COUNT(*) FROM tb_master_mapel;")).fetchone()
+                status["n_master_mapel"] = r5[0] or 0
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return status
 
 
 def update_irt_model_in_db(

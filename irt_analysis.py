@@ -85,8 +85,23 @@ def run_irt_analysis(
     if seed is not None:
         np.random.seed(seed)
 
+    import streamlit as st
+
     df = df_matrix.copy()
     item_cols = get_item_columns(df)
+
+    if not item_cols:
+        if hasattr(df_matrix, "attrs") and "sample_items_matrix" in df_matrix.attrs:
+            df = df_matrix.attrs["sample_items_matrix"].copy()
+            item_cols = get_item_columns(df)
+        elif "df_matrix_sample" in st.session_state and st.session_state["df_matrix_sample"] is not None:
+            df = st.session_state["df_matrix_sample"].copy()
+            item_cols = get_item_columns(df)
+
+    # Batasi sampel peserta untuk komputasi IRT agar tidak melebihi 50.000 peserta
+    # (50.000 responden sudah memiliki margin of error psikometri < 0.1% dan sangat cepat)
+    if len(df) > 50000:
+        df = df.sample(n=50000, random_state=seed if seed is not None else 42).copy()
 
     usr_col = None
     for candidate in ["username", "Username", "id_peserta", "id", "user_id"]:
@@ -118,9 +133,9 @@ def run_irt_analysis(
 
     def calculate_discrimination_params_sparse(X_mat_sparse, total_scores, p_vector):
         a_results = []
-        dense_sample = X_mat_sparse.toarray() # Diambil per kolom secara aman
+        X_csc = X_mat_sparse.tocsc() # Slicing kolom efisien dan hemat memori
         for j in range(n_items):
-            item_resp = dense_sample[:, j]
+            item_resp = X_csc[:, j].toarray().flatten()
             rest_score = total_scores - item_resp
             
             p = p_vector[j]

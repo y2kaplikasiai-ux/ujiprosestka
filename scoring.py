@@ -271,44 +271,176 @@ def process_scoring(df_respon, df_kunci, batch_size=50000):
         n_rows = len(df_respon)
         n_items = len(used_items)
 
-        score_matrix = np.full((n_rows, n_items), np.nan, dtype=np.float32)
-        jumlah_soal_list = np.zeros(n_rows, dtype=np.uint16)
-
         raw_list_soal = df_respon["list_soal"].values
         raw_respon = df_respon["respon"].values
 
-        # Proses secara iteratif per batch untuk menjaga kestabilan memori
-        for start_idx in range(0, n_rows, batch_size):
-            end_idx = min(start_idx + batch_size, n_rows)
-            for idx in range(start_idx, end_idx):
+        # KONDISI BIG DATA: Jika jumlah sel > 2.000.000 atau n_rows > 30.000
+        # Hindari membuat 2D dense float array raksasa (misal 10M x 4580 = 184 GB RAM yang memicu OOM-Killer).
+        # Gunakan High-Throughput Streaming Scoring 1D array (~40 MB RAM) untuk menilai 100% populasi.
+        is_big_data = (n_rows * n_items > 2_000_000) or (n_rows > 30_000)
+
+        if is_big_data:
+            skor_mentah_arr = np.zeros(n_rows, dtype=np.int16)
+            jumlah_soal_arr = np.zeros(n_rows, dtype=np.int16)
+
+            for idx in range(n_rows):
                 val_soal = raw_list_soal[idx]
                 val_resp = raw_respon[idx]
 
-                str_soal = "" if pd.isna(val_soal) else str(val_soal).strip()
-                str_resp = "" if pd.isna(val_resp) else str(val_resp).strip()
+                if pd.isna(val_soal) or pd.isna(val_resp):
+                    continue
+
+                str_soal = str(val_soal).strip()
+                str_resp = str(val_resp).strip()
+                if not str_soal or not str_resp:
+                    continue
 
                 soal_list = [s.strip() for s in str_soal.split(",") if s.strip()]
                 respon_list = [r.strip().upper() for r in str_resp.split(",")]
 
-                jumlah_soal_list[idx] = len(soal_list)
+                jumlah_soal_arr[idx] = len(soal_list)
 
+                c_benar = 0
                 for pos, s_code in enumerate(soal_list):
-                    if s_code in item_to_idx:
-                        resp = respon_list[pos] if pos < len(respon_list) else ""
-                        kunci = kunci_dict.get(s_code)
+                    if pos < len(respon_list) and respon_list[pos] != "":
+                        if kunci_dict.get(s_code) == respon_list[pos]:
+                            c_benar += 1
+                skor_mentah_arr[idx] = c_benar
 
-                        if kunci is not None:
-                            score_matrix[idx, item_to_idx[s_code]] = (
-                                1.0 if (resp != "" and resp == kunci) else 0.0
-                            )
+            df_matrix = pd.DataFrame()
+            df_matrix["username"] = df_respon[id_col_respon].values
+            if "mapel" in df_respon.columns:
+                df_matrix["mapel"] = df_respon["mapel"].values
+            if kode_paket_col:
+                df_matrix["kode_paket"] = df_respon[kode_paket_col].values
+            df_matrix["skor_mentah"] = skor_mentah_arr
+            df_matrix["Jumlah_Soal"] = jumlah_soal_arr
+            df_matrix["Nilai_Konversi"] = np.where(
+                jumlah_soal_arr > 0,
+                np.round((skor_mentah_arr / np.maximum(jumlah_soal_arr, 1)) * 100.0, 2),
+                0.0,
+            )
 
-        df_matrix = pd.DataFrame(score_matrix, columns=used_items)
-        df_matrix.insert(0, "username", df_respon[id_col_respon].values)
-        if "mapel" in df_respon.columns:
-            df_matrix.insert(1, "mapel", df_respon["mapel"].values)
-        if kode_paket_col:
-            df_matrix.insert(2 if "mapel" in df_respon.columns else 1, "kode_paket", df_respon[kode_paket_col].values)
-        df_matrix["Jumlah_Soal"] = jumlah_soal_list
+            # Buat sampel representatif per mata pelajaran untuk matriks butir CTT & IRT
+            mapel_samples = {}
+            if "mapel" in df_respon.columns:
+                unique_mapels = [
+                    m for m in df_respon["mapel"].dropna().unique()
+                    if str(m).strip() not in ["", "nan", "None", "-"]
+                ]
+            else:
+                unique_mapels = ["UMUM"]
+
+            all_sample_dfs = []
+            np.random.seed(42)
+
+            for mpl in unique_mapels:
+                if mpl == "UMUM":
+                    df_mpl_source = df_respon
+                else:
+                    df_mpl_source = df_respon[df_respon["mapel"] == mpl]
+
+                n_mpl_rows = len(df_mpl_source)
+                if n_mpl_rows == 0:
+                    continue
+
+                mpl_sample_size = min(20000, n_mpl_rows)
+                mpl_sample_resp = df_mpl_source.sample(n=mpl_sample_size, random_state=42)
+
+                # Ekstrak butir soal yang aktif pada mata pelajaran ini
+                mpl_items = set()
+                for s_str in mpl_sample_resp["list_soal"].dropna():
+                    for item in str(s_str).split(","):
+                        item_clean = item.strip()
+                        if item_clean in kunci_dict:
+                            mpl_items.add(item_clean)
+
+                mpl_used_items = sorted(list(mpl_items))
+                m_item_to_idx = {it: i for i, it in enumerate(mpl_used_items)}
+                n_m_items = len(mpl_used_items)
+
+                if n_m_items > 0:
+                    mpl_score_mat = np.full((mpl_sample_size, n_m_items), np.nan, dtype=np.float32)
+                    mpl_raw_soal = mpl_sample_resp["list_soal"].values
+                    mpl_raw_resp = mpl_sample_resp["respon"].values
+
+                    for s_idx in range(mpl_sample_size):
+                        str_s = "" if pd.isna(mpl_raw_soal[s_idx]) else str(mpl_raw_soal[s_idx]).strip()
+                        str_r = "" if pd.isna(mpl_raw_resp[s_idx]) else str(mpl_raw_resp[s_idx]).strip()
+                        if not str_s or not str_r:
+                            continue
+                        s_list = [s.strip() for s in str_s.split(",") if s.strip()]
+                        r_list = [r.strip().upper() for r in str_r.split(",")]
+
+                        for pos, s_code in enumerate(s_list):
+                            if s_code in m_item_to_idx:
+                                r_ans = r_list[pos] if pos < len(r_list) else ""
+                                k_ans = kunci_dict.get(s_code)
+                                if k_ans is not None:
+                                    mpl_score_mat[s_idx, m_item_to_idx[s_code]] = (
+                                        1.0 if (r_ans != "" and r_ans == k_ans) else 0.0
+                                    )
+
+                    df_mpl_matrix = pd.DataFrame(mpl_score_mat, columns=mpl_used_items)
+                    df_mpl_matrix.insert(0, "username", mpl_sample_resp[id_col_respon].values)
+                    if "mapel" in mpl_sample_resp.columns:
+                        df_mpl_matrix.insert(1, "mapel", mpl_sample_resp["mapel"].values)
+                    else:
+                        df_mpl_matrix.insert(1, "mapel", mpl)
+                    if kode_paket_col:
+                        insert_pos = 2 if "mapel" in df_mpl_matrix.columns else 1
+                        df_mpl_matrix.insert(insert_pos, "kode_paket", mpl_sample_resp[kode_paket_col].values)
+
+                    orig_indices = mpl_sample_resp.index.to_numpy()
+                    df_mpl_matrix["skor_mentah"] = skor_mentah_arr[orig_indices]
+                    df_mpl_matrix["Jumlah_Soal"] = jumlah_soal_arr[orig_indices]
+                    df_mpl_matrix["Nilai_Konversi"] = df_matrix["Nilai_Konversi"].iloc[orig_indices].values
+
+                    mapel_samples[str(mpl)] = df_mpl_matrix
+                    all_sample_dfs.append(df_mpl_matrix)
+
+            df_matrix.attrs["mapel_samples"] = mapel_samples
+            if all_sample_dfs:
+                df_matrix.attrs["sample_items_matrix"] = pd.concat(all_sample_dfs, ignore_index=True)
+            else:
+                df_matrix.attrs["sample_items_matrix"] = pd.DataFrame()
+
+        else:
+            score_matrix = np.full((n_rows, n_items), np.nan, dtype=np.float32)
+            jumlah_soal_list = np.zeros(n_rows, dtype=np.uint16)
+
+            # Proses secara iteratif per batch untuk menjaga kestabilan memori
+            for start_idx in range(0, n_rows, batch_size):
+                end_idx = min(start_idx + batch_size, n_rows)
+                for idx in range(start_idx, end_idx):
+                    val_soal = raw_list_soal[idx]
+                    val_resp = raw_respon[idx]
+
+                    str_soal = "" if pd.isna(val_soal) else str(val_soal).strip()
+                    str_resp = "" if pd.isna(val_resp) else str(val_resp).strip()
+
+                    soal_list = [s.strip() for s in str_soal.split(",") if s.strip()]
+                    respon_list = [r.strip().upper() for r in str_resp.split(",")]
+
+                    jumlah_soal_list[idx] = len(soal_list)
+
+                    for pos, s_code in enumerate(soal_list):
+                        if s_code in item_to_idx:
+                            resp = respon_list[pos] if pos < len(respon_list) else ""
+                            kunci = kunci_dict.get(s_code)
+
+                            if kunci is not None:
+                                score_matrix[idx, item_to_idx[s_code]] = (
+                                    1.0 if (resp != "" and resp == kunci) else 0.0
+                                )
+
+            df_matrix = pd.DataFrame(score_matrix, columns=used_items)
+            df_matrix.insert(0, "username", df_respon[id_col_respon].values)
+            if "mapel" in df_respon.columns:
+                df_matrix.insert(1, "mapel", df_respon["mapel"].values)
+            if kode_paket_col:
+                df_matrix.insert(2 if "mapel" in df_respon.columns else 1, "kode_paket", df_respon[kode_paket_col].values)
+            df_matrix["Jumlah_Soal"] = jumlah_soal_list
 
     elif "kode_soal" in df_respon.columns and "jawaban" in df_respon.columns:
         df_respon["kode_soal_clean"] = df_respon["kode_soal"].astype(str).str.strip()
@@ -399,18 +531,23 @@ def process_scoring(df_respon, df_kunci, batch_size=50000):
         and (df_matrix[c].dtype != object or pd.to_numeric(df_matrix[c], errors="coerce").notna().sum() > 0)
     ]
 
-    df_matrix["skor_mentah"] = (
-        df_matrix[item_cols]
-        .apply(pd.to_numeric, errors="coerce")
-        .sum(axis=1, skipna=True)
-        .astype(int)
-    )
+    if "skor_mentah" not in df_matrix.columns:
+        if item_cols:
+            df_matrix["skor_mentah"] = (
+                df_matrix[item_cols]
+                .apply(pd.to_numeric, errors="coerce")
+                .sum(axis=1, skipna=True)
+                .astype(int)
+            )
+        else:
+            df_matrix["skor_mentah"] = 0
 
-    df_matrix["Nilai_Konversi"] = np.where(
-        df_matrix["Jumlah_Soal"] > 0,
-        (df_matrix["skor_mentah"] / df_matrix["Jumlah_Soal"]) * 100.0,
-        0.0,
-    ).round(2)
+    if "Nilai_Konversi" not in df_matrix.columns:
+        df_matrix["Nilai_Konversi"] = np.where(
+            df_matrix["Jumlah_Soal"] > 0,
+            (df_matrix["skor_mentah"] / df_matrix["Jumlah_Soal"]) * 100.0,
+            0.0,
+        ).round(2)
 
     return df_matrix
 
@@ -440,7 +577,22 @@ def calculate_person_fit(df_matrix, df_params, b_col="b"):
     ]
 
     if not item_cols:
-        return empty_res
+        import streamlit as st
+        if hasattr(df_matrix, "attrs") and "sample_items_matrix" in df_matrix.attrs:
+            df_matrix = df_matrix.attrs["sample_items_matrix"]
+        elif "df_matrix_sample" in st.session_state and st.session_state["df_matrix_sample"] is not None:
+            df_matrix = st.session_state["df_matrix_sample"]
+
+        item_cols = [
+            c for c in df_matrix.columns
+            if c.lower() not in [x.lower() for x in non_item_cols]
+            and (df_matrix[c].dtype != object or pd.to_numeric(df_matrix[c], errors="coerce").notna().sum() > 0)
+        ]
+        if not item_cols:
+            return empty_res
+
+    if len(df_matrix) > 50000:
+        df_matrix = df_matrix.sample(n=50000, random_state=42)
 
     item_map = dict(zip(df_params[df_params.columns[0]].astype(str), df_params[b_col]))
     b_vec = np.array([item_map.get(str(c), 0.0) for c in item_cols])

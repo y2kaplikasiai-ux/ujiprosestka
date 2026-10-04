@@ -155,11 +155,17 @@ def render_tab_ctt(ctt_res, df_matrix=None, dfs=None):
 
     total_items = len(df_items)
     mean_p = p_series.dropna().mean() if not p_series.dropna().empty else 0.0
-    mean_d = d_series.dropna().mean() if not d_series.dropna().empty else 0.0
-    rel_val = ctt_res.get(
-        "Reliabilitas",
-        ctt_res.get("cronbach_alpha", ctt_res.get("reliability", 0.53)),
-    )
+    alpha_map = ctt_res.get("alpha_by_mapel", {})
+    if "selected_mapel" in locals() and selected_mapel and selected_mapel in alpha_map:
+        rel_val = alpha_map[selected_mapel]
+    elif "selected_mapel" in locals() and selected_mapel:
+        match_k = next((k for k in alpha_map if str(k).strip().upper() == str(selected_mapel).strip().upper()), None)
+        rel_val = alpha_map[match_k] if match_k else ctt_res.get("cronbach_alpha", 0.0)
+    else:
+        rel_val = ctt_res.get(
+            "Reliabilitas",
+            ctt_res.get("cronbach_alpha", ctt_res.get("reliability", 0.0)),
+        )
 
     col1.metric("Total Soal Teranalisis", f"{total_items} Butir")
     col2.metric(

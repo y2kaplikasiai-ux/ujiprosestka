@@ -144,7 +144,7 @@ def _auto_save_to_mysql(selected_model, df_matrix, df_params, df_persons_display
 
 
 def render_tab_irt(df_matrix, dfs, ctt_res):
-    st.subheader("Analisis Item Response Theory (IRT)")
+    st.subheader("🎯 Analisis Item Response Theory (IRT)")
 
     if df_matrix is None or df_matrix.empty:
         df_matrix = st.session_state.get("df_matrix")
@@ -152,6 +152,78 @@ def render_tab_irt(df_matrix, dfs, ctt_res):
     if df_matrix is None or df_matrix.empty:
         st.warning("⚠️ Data matriks belum siap untuk dianalisis IRT.")
         return
+
+    # --- 1. FILTER MATA PELAJARAN (DI BAGIAN PALING ATAS) ---
+    mapel_lookup = {}
+    if dfs and isinstance(dfs, dict) and "mapel" in dfs and dfs["mapel"] is not None and not dfs["mapel"].empty:
+        mapel_lookup = get_mapel_lookup_dict(dfs["mapel"])
+    if not mapel_lookup:
+        mapel_lookup = st.session_state.get("mapel_dict", {})
+    if not mapel_lookup and "val_result" in st.session_state:
+        df_mpl_sess = st.session_state["val_result"].get("dataframes", {}).get("mapel")
+        if df_mpl_sess is not None and not df_mpl_sess.empty:
+            mapel_lookup = get_mapel_lookup_dict(df_mpl_sess)
+    if not mapel_lookup:
+        mapel_lookup = get_mapel_lookup_dict(None)
+
+    available_irt_mapels = []
+
+    # A. Cek dari kunci jawaban
+    if dfs and isinstance(dfs, dict) and "kunci" in dfs and dfs["kunci"] is not None and not dfs["kunci"].empty:
+        df_k = dfs["kunci"]
+        c_m = next((c for c in df_k.columns if str(c).strip().lower() in ["mapel", "mata_pelajaran", "mata pelajaran", "subject", "paket"]), None)
+        if c_m:
+            for val in df_k[c_m].dropna().unique():
+                val_s = str(val).strip()
+                if val_s and val_s not in ["", "nan", "None", "-"]:
+                    val_norm = mapel_lookup.get(val_s.upper(), mapel_lookup.get(val_s, val_s))
+                    if val_norm not in available_irt_mapels:
+                        available_irt_mapels.append(val_norm)
+
+    # B. Cek dari ctt_res item_stats
+    if not available_irt_mapels and ctt_res and isinstance(ctt_res, dict) and "item_stats" in ctt_res and ctt_res["item_stats"] is not None:
+        df_is = ctt_res["item_stats"]
+        c_m = next((c for c in df_is.columns if str(c).strip().lower() in ["mapel", "mata_pelajaran", "mata pelajaran", "subject", "paket"]), None)
+        if c_m:
+            for val in df_is[c_m].dropna().unique():
+                val_s = str(val).strip()
+                if val_s and val_s not in ["", "nan", "None", "-"]:
+                    val_norm = mapel_lookup.get(val_s.upper(), mapel_lookup.get(val_s, val_s))
+                    if val_norm not in available_irt_mapels:
+                        available_irt_mapels.append(val_norm)
+
+    # C. Cek dari df_peserta_skor
+    if not available_irt_mapels and st.session_state.get("df_peserta_skor") is not None:
+        df_ps = st.session_state["df_peserta_skor"]
+        if "mapel" in df_ps.columns:
+            for val in df_ps["mapel"].dropna().unique():
+                val_s = str(val).strip()
+                if val_s and val_s not in ["", "nan", "None", "-"]:
+                    val_norm = mapel_lookup.get(val_s.upper(), mapel_lookup.get(val_s, val_s))
+                    if val_norm not in available_irt_mapels:
+                        available_irt_mapels.append(val_norm)
+
+    # D. Cek dari df_matrix
+    if not available_irt_mapels and df_matrix is not None and not df_matrix.empty:
+        c_m = next((c for c in df_matrix.columns if str(c).strip().lower() in ["mapel", "mata_pelajaran", "mata pelajaran", "subject", "paket"]), None)
+        if c_m:
+            for val in df_matrix[c_m].dropna().unique():
+                val_s = str(val).strip()
+                if val_s and val_s not in ["", "nan", "None", "-"]:
+                    val_norm = mapel_lookup.get(val_s.upper(), mapel_lookup.get(val_s, val_s))
+                    if val_norm not in available_irt_mapels:
+                        available_irt_mapels.append(val_norm)
+
+    available_irt_mapels = sorted(list(set(available_irt_mapels)))
+
+    selected_irt_mapel = None
+    if available_irt_mapels:
+        selected_irt_mapel = st.selectbox(
+            "Pilih Mata Pelajaran:",
+            options=available_irt_mapels,
+            key="filter_irt_main_mapel",
+            help="Pilih 1 mata pelajaran untuk melihat estimasi dan karakteristik butir IRT.",
+        )
 
     # --- AMBIL KONFIGURASI SKALA DARI SIDEBAR ---
     scale_min = float(st.session_state.get("cfg_min_scale", 200.0))
@@ -267,8 +339,60 @@ def render_tab_irt(df_matrix, dfs, ctt_res):
     cache_data = irt_results_store[model_key]
     df_persons_raw = cache_data["df_person"].copy()
     df_params = cache_data["item_params"].copy()
-    n_total_pop = cache_data.get("n_total", len(df_matrix))
-    n_sample_pop = cache_data.get("n_sample", len(df_persons_raw))
+
+    # Hubungkan mata pelajaran ke df_params (parameter butir)
+    if not df_params.empty and "mapel" not in df_params.columns:
+        first_c = df_params.columns[0]
+        if dfs and "kunci" in dfs and dfs["kunci"] is not None and not dfs["kunci"].empty:
+            df_k = dfs["kunci"]
+            c_m = next((c for c in df_k.columns if str(c).strip().lower() in ["mapel", "mata_pelajaran", "mata pelajaran", "subject", "paket"]), None)
+            c_s = next((c for c in df_k.columns if str(c).strip().lower() in ["kode_soal", "id_soal", "soal", "kd_soal"]), None)
+            if c_m and c_s:
+                m_dict = dict(zip(df_k[c_s].astype(str).str.strip(), df_k[c_m].astype(str).str.strip()))
+                df_params["mapel"] = df_params[first_c].astype(str).str.strip().map(m_dict)
+        elif ctt_res and "item_stats" in ctt_res and ctt_res["item_stats"] is not None:
+            df_is = ctt_res["item_stats"]
+            c_m = next((c for c in df_is.columns if str(c).strip().lower() in ["mapel", "mata_pelajaran", "mata pelajaran", "subject", "paket"]), None)
+            c_s = df_is.columns[0]
+            if c_m:
+                m_dict = dict(zip(df_is[c_s].astype(str).str.strip(), df_is[c_m].astype(str).str.strip()))
+                df_params["mapel"] = df_params[first_c].astype(str).str.strip().map(m_dict)
+        elif df_matrix is not None and "mapel" in df_matrix.columns:
+            m_vals = df_matrix["mapel"].dropna().unique()
+            if len(m_vals) == 1:
+                df_params["mapel"] = str(m_vals[0]).upper()
+
+    if not df_params.empty and "mapel" in df_params.columns:
+        df_params["mapel"] = df_params["mapel"].map(
+            lambda x: mapel_lookup.get(str(x).strip().upper(), mapel_lookup.get(str(x).strip(), str(x).strip()))
+        )
+
+    # Filter data butir dan peserta berdasarkan mata pelajaran yang dipilih
+    if selected_irt_mapel:
+        if not df_params.empty and "mapel" in df_params.columns and (df_params["mapel"] == selected_irt_mapel).any():
+            df_params = df_params[df_params["mapel"] == selected_irt_mapel].copy()
+
+        df_sess_p = st.session_state.get("df_peserta_skor")
+        if df_sess_p is not None and not df_sess_p.empty and "mapel" in df_sess_p.columns:
+            norm_mapel_p = df_sess_p["mapel"].map(
+                lambda x: mapel_lookup.get(str(x).strip().upper(), mapel_lookup.get(str(x).strip(), str(x).strip()))
+            )
+            users_mapel = set(df_sess_p[norm_mapel_p == selected_irt_mapel]["username"].astype(str).str.strip().str.lower())
+            if users_mapel and not df_persons_raw.empty:
+                usr_p_col = df_persons_raw.columns[0]
+                df_persons_raw = df_persons_raw[df_persons_raw[usr_p_col].astype(str).str.strip().str.lower().isin(users_mapel)].copy()
+        elif df_matrix is not None and "mapel" in df_matrix.columns:
+            usr_m_col = df_matrix.columns[0]
+            norm_mapel_m = df_matrix["mapel"].map(
+                lambda x: mapel_lookup.get(str(x).strip().upper(), mapel_lookup.get(str(x).strip(), str(x).strip()))
+            )
+            users_mapel = set(df_matrix[norm_mapel_m == selected_irt_mapel][usr_m_col].astype(str).str.strip().str.lower())
+            if users_mapel and not df_persons_raw.empty:
+                usr_p_col = df_persons_raw.columns[0]
+                df_persons_raw = df_persons_raw[df_persons_raw[usr_p_col].astype(str).str.strip().str.lower().isin(users_mapel)].copy()
+
+    n_total_pop = len(df_persons_raw) if not df_persons_raw.empty else cache_data.get("n_total", len(df_matrix))
+    n_sample_pop = len(df_persons_raw)
 
     irt_res = {"person_params": df_persons_raw, "item_params": df_params}
 
@@ -637,53 +761,6 @@ def render_tab_irt(df_matrix, dfs, ctt_res):
 
     # --- GRAFIK ICC, TIF, DAN WRIGHT MAP ---
     if not df_params.empty:
-        # Tambahkan mapel ke df_params jika belum ada
-        if "mapel" not in df_params.columns:
-            if dfs and "kunci" in dfs and dfs["kunci"] is not None and not dfs["kunci"].empty:
-                df_k = dfs["kunci"]
-                c_m = next((c for c in df_k.columns if str(c).strip().lower() in ["mapel", "mata_pelajaran", "mata pelajaran", "subject", "paket"]), None)
-                c_s = next((c for c in df_k.columns if str(c).strip().lower() in ["kode_soal", "id_soal", "soal", "kd_soal"]), None)
-                if c_m and c_s:
-                    m_dict = dict(zip(df_k[c_s].astype(str).str.strip(), df_k[c_m].astype(str).str.strip()))
-                    first_c = df_params.columns[0]
-                    df_params["mapel"] = df_params[first_c].astype(str).str.strip().map(m_dict)
-            elif df_matrix is not None and "mapel" in df_matrix.columns:
-                m_vals = df_matrix["mapel"].dropna().unique()
-                if len(m_vals) == 1:
-                    df_params["mapel"] = str(m_vals[0]).upper()
-
-        if "mapel" in df_params.columns and df_params["mapel"].notna().any():
-            mapel_lookup = {}
-            if dfs and isinstance(dfs, dict) and "mapel" in dfs and dfs["mapel"] is not None and not dfs["mapel"].empty:
-                mapel_lookup = get_mapel_lookup_dict(dfs["mapel"])
-            if not mapel_lookup:
-                mapel_lookup = st.session_state.get("mapel_dict", {})
-            if not mapel_lookup and "val_result" in st.session_state:
-                df_mpl_sess = st.session_state["val_result"].get("dataframes", {}).get("mapel")
-                if df_mpl_sess is not None and not df_mpl_sess.empty:
-                    mapel_lookup = get_mapel_lookup_dict(df_mpl_sess)
-            if not mapel_lookup:
-                mapel_lookup = get_mapel_lookup_dict(None)
-
-            df_params["mapel"] = df_params["mapel"].map(
-                lambda x: mapel_lookup.get(str(x).strip().upper(), mapel_lookup.get(str(x).strip(), str(x).strip()))
-            )
-
-            available_irt_mapels = sorted(
-                [
-                    str(m)
-                    for m in df_params["mapel"].dropna().unique()
-                    if str(m).strip() not in ["", "nan", "None", "-"]
-                ]
-            )
-            if available_irt_mapels:
-                selected_irt_mapel = st.selectbox(
-                    "Pilih Mata Pelajaran Butir Soal:",
-                    options=available_irt_mapels,
-                    key="filter_irt_item_mapel",
-                )
-                df_params = df_params[df_params["mapel"] == selected_irt_mapel].copy()
-
         item_col_name = df_params.columns[0]
         all_items = df_params[item_col_name].astype(str).tolist()
         selected_items = st.multiselect(
