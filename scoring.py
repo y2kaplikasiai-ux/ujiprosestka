@@ -377,15 +377,34 @@ def process_scoring(df_respon, df_kunci, batch_size=50000):
 
     non_item = [
         "username",
+        "user_id",
+        "id_peserta",
         "mapel",
+        "mata_pelajaran",
+        "subject",
         "kode_paket",
+        "kd_paket",
+        "paket",
         "skor_mentah",
         "nilai_konversi",
         "jumlah_soal",
+        "_school_key",
+        "_prop_key_user",
+        "kd_prop",
+        "kode_provinsi",
     ]
-    item_cols = [c for c in df_matrix.columns if c.lower() not in non_item]
+    item_cols = [
+        c for c in df_matrix.columns
+        if c.lower() not in non_item
+        and (df_matrix[c].dtype != object or pd.to_numeric(df_matrix[c], errors="coerce").notna().sum() > 0)
+    ]
 
-    df_matrix["skor_mentah"] = df_matrix[item_cols].sum(axis=1, skipna=True).astype(int)
+    df_matrix["skor_mentah"] = (
+        df_matrix[item_cols]
+        .apply(pd.to_numeric, errors="coerce")
+        .sum(axis=1, skipna=True)
+        .astype(int)
+    )
 
     df_matrix["Nilai_Konversi"] = np.where(
         df_matrix["Jumlah_Soal"] > 0,
@@ -407,6 +426,7 @@ def calculate_person_fit(df_matrix, df_params, b_col="b"):
     non_item_cols = [
         "username", "user_id", "nama", "tahun", "kode_paket", "nama_sekolah",
         "kode_sekolah", "nama_kabupaten", "nama_provinsi", "kode_provinsi",
+        "mapel", "mata_pelajaran", "subject",
         "skor_mentah", "skormentah", "nilai_konversi", "Nilai_Konversi",
         "skor_konversi_ctt", "skor_konversi_rasch", "skor_konversi_1pl",
         "skor_konversi_2pl", "skor_konversi_3pl", "Jumlah_Soal", "jumlah_soal",
@@ -414,7 +434,9 @@ def calculate_person_fit(df_matrix, df_params, b_col="b"):
     ]
 
     item_cols = [
-        c for c in df_matrix.columns if c.lower() not in [x.lower() for x in non_item_cols]
+        c for c in df_matrix.columns
+        if c.lower() not in [x.lower() for x in non_item_cols]
+        and (df_matrix[c].dtype != object or pd.to_numeric(df_matrix[c], errors="coerce").notna().sum() > 0)
     ]
 
     if not item_cols:

@@ -3,6 +3,7 @@ import streamlit as st
 import pandas as pd
 from ui_components import render_score_histogram
 from db_helper import get_db_connection
+from validators import get_mapel_lookup_dict
 
 
 @st.cache_data(ttl=60)
@@ -17,21 +18,93 @@ def load_scoring_from_mysql():
         return None
 
 
-def render_tab_scoring(df_matrix):
-    # Prioritaskan Single Source of Truth dari MySQL
-    df_db = load_scoring_from_mysql()
-
-    if df_db is not None and not df_db.empty:
-        df_target = df_db.copy()
-        is_mysql = True
-    elif df_matrix is not None and not df_matrix.empty:
+def render_tab_scoring(df_matrix, dfs=None):
+    # Prioritaskan data di memory session agar proses instan tanpa query ulang MySQL
+    df_target = None
+    df_sess = st.session_state.get("df_peserta_skor")
+    if df_sess is not None and not df_sess.empty:
+        df_target = df_sess.copy()
+        is_mysql = False
+    elif df_matrix is not None and not df_matrix.empty and "skor_konversi_ctt" in df_matrix.columns:
         df_target = df_matrix.copy()
         is_mysql = False
     else:
-        st.info("Belum ada data hasil skoring yang tersedia.")
-        return
+        df_db = load_scoring_from_mysql()
+        if df_db is not None and not df_db.empty:
+            df_target = df_db.copy()
+            is_mysql = True
+        elif df_matrix is not None and not df_matrix.empty:
+            df_target = df_matrix.copy()
+            is_mysql = False
+        else:
+            st.info("Belum ada data hasil skoring yang tersedia.")
+            return
 
     st.subheader("Hasil Skoring Dikotomus (0 / 1)")
+
+    # Mapping nama mata pelajaran mengacu ke master mapel
+    mapel_lookup = {}
+    if dfs and isinstance(dfs, dict) and "mapel" in dfs and dfs["mapel"] is not None and not dfs["mapel"].empty:
+        mapel_lookup = get_mapel_lookup_dict(dfs["mapel"])
+    if not mapel_lookup:
+        mapel_lookup = st.session_state.get("mapel_dict", {})
+    if not mapel_lookup and "val_result" in st.session_state:
+        df_mpl_sess = st.session_state["val_result"].get("dataframes", {}).get("mapel")
+        if df_mpl_sess is not None and not df_mpl_sess.empty:
+            mapel_lookup = get_mapel_lookup_dict(df_mpl_sess)
+    if not mapel_lookup:
+        mapel_lookup = get_mapel_lookup_dict(None)
+
+    mapel_cols = [
+        c
+        for c in df_target.columns
+        if str(c).strip().lower()
+        in ["mapel", "mata_pelajaran", "mata pelajaran", "subject", "paket"]
+    ]
+    if not mapel_cols and df_matrix is not None and not df_matrix.empty:
+        m_col_mat = next(
+            (
+                c
+                for c in df_matrix.columns
+                if str(c).strip().lower()
+                in ["mapel", "mata_pelajaran", "mata pelajaran", "subject", "paket"]
+            ),
+            None,
+        )
+        if m_col_mat:
+            usr_mat = df_matrix.columns[0]
+            usr_t = "username" if "username" in df_target.columns else df_target.columns[0]
+            u_map = dict(
+                zip(
+                    df_matrix[usr_mat].astype(str).str.strip(),
+                    df_matrix[m_col_mat].astype(str).str.strip(),
+                )
+            )
+            df_target["mapel"] = df_target[usr_t].astype(str).str.strip().map(u_map)
+            mapel_cols = ["mapel"]
+
+    if mapel_cols:
+        mapel_col = mapel_cols[0]
+        df_target[mapel_col] = df_target[mapel_col].map(
+            lambda x: mapel_lookup.get(
+                str(x).strip().upper(),
+                mapel_lookup.get(str(x).strip(), str(x).strip()),
+            )
+        )
+        list_mapel = sorted(
+            [
+                str(x)
+                for x in df_target[mapel_col].dropna().unique().tolist()
+                if str(x).strip() not in ["", "nan", "None", "-"]
+            ]
+        )
+        if list_mapel:
+            selected_mapel = st.selectbox(
+                "Pilih Mata Pelajaran:",
+                options=list_mapel,
+                key="filter_scoring_mapel",
+            )
+            df_target = df_target[df_target[mapel_col] == selected_mapel].copy()
 
     usr_col = (
         "username" if "username" in df_target.columns else df_target.columns[0]
@@ -73,18 +146,33 @@ def render_tab_scoring(df_matrix):
             usr_col,
             "tahun",
             "username",
+            "user_id",
             "nama",
+            "mapel",
+            "mata_pelajaran",
+            "subject",
+            "kode_paket",
+            "kd_paket",
+            "paket",
             "skor_mentah",
             "Nilai_Konversi",
+            "nilai_konversi",
             "skor_konversi_ctt",
             "skor_konversi_rasch",
             "skor_konversi_1pl",
             "skor_konversi_2pl",
             "skor_konversi_3pl",
+            "Jumlah_Soal",
+            "jumlah_soal",
             "_school_key",
             "_prop_key_user",
+            "kd_prop",
+            "kode_provinsi",
         ]
-        item_cols = [c for c in df_target.columns if c not in meta_cols]
+        item_cols = [
+            c for c in df_target.columns
+            if c not in meta_cols and (df_target[c].dtype != object or pd.to_numeric(df_target[c], errors="coerce").notna().sum() > 0)
+        ]
         avg_soal = (
             float(len(item_cols))
             if item_cols
@@ -129,6 +217,7 @@ def render_tab_scoring(df_matrix):
     selected_cols = []
     for col in [
         "username",
+        "mapel",
         "tahun",
         "Jumlah_Soal",
         "skor_mentah",
@@ -148,6 +237,7 @@ def render_tab_scoring(df_matrix):
 
     rename_map = {
         "username": "Username",
+        "mapel": "Mata Pelajaran",
         "Jumlah_Soal": "Jumlah Soal",
         "skor_mentah": "Skor Mentah",
         "Nilai_Konversi": "Nilai Konversi Klasik",

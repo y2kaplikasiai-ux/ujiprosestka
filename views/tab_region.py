@@ -9,6 +9,7 @@ import plotly.graph_objects as go
 import streamlit as st
 from db_helper import get_db_connection
 from excel_exporter import convert_df_to_csv_bytes
+from validators import get_mapel_lookup_dict
 
 # Mapping Kode Provinsi BPS/Kemendagri ke Nama Provinsi Standard
 KODE_PROVINSI_MAP = {
@@ -363,7 +364,9 @@ def _resolve_province_name(prov_val, kd_val=None, username_val=None):
 def _get_region_df(df_matrix_school, dfs):
     """Mengekstrak dan mencocokkan DataFrame Peserta dengan data Wilayah secara konsisten."""
     df_base = None
-    if df_matrix_school is not None and not df_matrix_school.empty:
+    if st.session_state.get("df_peserta_skor") is not None and not st.session_state["df_peserta_skor"].empty:
+        df_base = st.session_state["df_peserta_skor"]
+    elif df_matrix_school is not None and not df_matrix_school.empty:
         df_base = df_matrix_school
     elif st.session_state.get("df_matrix_school") is not None and not st.session_state["df_matrix_school"].empty:
         df_base = st.session_state["df_matrix_school"]
@@ -407,6 +410,12 @@ def _get_region_df(df_matrix_school, dfs):
         & (df_res["nama_kabupaten"].astype(str).str.strip().str.upper() != "TIDAK TERDEFINISI")
         & (df_res["nama_kabupaten"].astype(str).str.strip() != "")
     ).any()
+
+    # JALUR CEPAT: Jika data sudah memiliki provinsi & kabupaten valid (misal dari scoring/MySQL), gunakan langsung secara instan
+    if has_prov and has_kab:
+        if "kode_provinsi" not in df_res.columns and "kd_prop" in df_res.columns:
+            df_res["kode_provinsi"] = df_res["kd_prop"]
+        return df_res
 
     # Jika belum lengkap di df_res, coba ambil metadata wilayah dari DB MySQL
     if not (has_prov and has_kab):
@@ -579,6 +588,24 @@ def render_tab_region(df_matrix_school, dfs):
             " **Scoring Engine** atau **Analisis IRT** terlebih dahulu."
         )
         return
+
+    # Sinkronisasi nama mata pelajaran dengan tabel master mapel jika ada
+    mapel_lookup = {}
+    if dfs and isinstance(dfs, dict) and "mapel" in dfs and dfs["mapel"] is not None and not dfs["mapel"].empty:
+        mapel_lookup = get_mapel_lookup_dict(dfs["mapel"])
+    if not mapel_lookup:
+        mapel_lookup = st.session_state.get("mapel_dict", {})
+    if not mapel_lookup and "val_result" in st.session_state:
+        df_mpl_sess = st.session_state["val_result"].get("dataframes", {}).get("mapel")
+        if df_mpl_sess is not None and not df_mpl_sess.empty:
+            mapel_lookup = get_mapel_lookup_dict(df_mpl_sess)
+    if not mapel_lookup:
+        mapel_lookup = get_mapel_lookup_dict(None)
+
+    if "mapel" in df_base.columns and mapel_lookup:
+        df_base["mapel"] = df_base["mapel"].map(
+            lambda x: mapel_lookup.get(str(x).strip().upper(), mapel_lookup.get(str(x).strip(), str(x).strip()))
+        )
 
     # Deteksi Mata Pelajaran yang tersedia
     available_mapels = []

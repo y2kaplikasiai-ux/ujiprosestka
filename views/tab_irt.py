@@ -10,6 +10,7 @@ from irt_analysis import run_irt_analysis
 from scoring import calculate_person_fit
 from db_helper import prepare_and_save_analysis, update_irt_model_in_db
 from ui_components import render_irt_icc, render_irt_tif, render_wright_map
+from validators import get_mapel_lookup_dict
 
 
 def _scale_theta_scores(df_persons, scale_min=200, scale_max=800):
@@ -442,7 +443,10 @@ def render_tab_irt(df_matrix, dfs, ctt_res):
             df_persons_display[person_id_col].astype(str).map(score_map)
         )
 
-        df_fit = calculate_person_fit(df_matrix, df_params, b_col=b_col)
+        df_fit = cache_data.get("df_fit")
+        if df_fit is None or df_fit.empty:
+            df_fit = calculate_person_fit(df_matrix, df_params, b_col=b_col)
+            cache_data["df_fit"] = df_fit
 
         df_persons_display[person_id_col] = (
             df_persons_display[person_id_col].astype(str).str.strip()
@@ -649,15 +653,36 @@ def render_tab_irt(df_matrix, dfs, ctt_res):
                     df_params["mapel"] = str(m_vals[0]).upper()
 
         if "mapel" in df_params.columns and df_params["mapel"].notna().any():
-            available_irt_mapels = ["Semua"] + sorted([str(m) for m in df_params["mapel"].dropna().unique()])
-            if len(available_irt_mapels) > 2:
+            mapel_lookup = {}
+            if dfs and isinstance(dfs, dict) and "mapel" in dfs and dfs["mapel"] is not None and not dfs["mapel"].empty:
+                mapel_lookup = get_mapel_lookup_dict(dfs["mapel"])
+            if not mapel_lookup:
+                mapel_lookup = st.session_state.get("mapel_dict", {})
+            if not mapel_lookup and "val_result" in st.session_state:
+                df_mpl_sess = st.session_state["val_result"].get("dataframes", {}).get("mapel")
+                if df_mpl_sess is not None and not df_mpl_sess.empty:
+                    mapel_lookup = get_mapel_lookup_dict(df_mpl_sess)
+            if not mapel_lookup:
+                mapel_lookup = get_mapel_lookup_dict(None)
+
+            df_params["mapel"] = df_params["mapel"].map(
+                lambda x: mapel_lookup.get(str(x).strip().upper(), mapel_lookup.get(str(x).strip(), str(x).strip()))
+            )
+
+            available_irt_mapels = sorted(
+                [
+                    str(m)
+                    for m in df_params["mapel"].dropna().unique()
+                    if str(m).strip() not in ["", "nan", "None", "-"]
+                ]
+            )
+            if available_irt_mapels:
                 selected_irt_mapel = st.selectbox(
-                    "Filter Mata Pelajaran Butir Soal:",
+                    "Pilih Mata Pelajaran Butir Soal:",
                     options=available_irt_mapels,
-                    key="filter_irt_item_mapel"
+                    key="filter_irt_item_mapel",
                 )
-                if selected_irt_mapel != "Semua":
-                    df_params = df_params[df_params["mapel"] == selected_irt_mapel].copy()
+                df_params = df_params[df_params["mapel"] == selected_irt_mapel].copy()
 
         item_col_name = df_params.columns[0]
         all_items = df_params[item_col_name].astype(str).tolist()

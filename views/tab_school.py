@@ -4,6 +4,7 @@ import plotly.express as px
 import streamlit as st
 from db_helper import get_db_connection
 from excel_exporter import convert_df_to_csv_bytes
+from validators import get_mapel_lookup_dict
 
 
 @st.cache_data(ttl=60)
@@ -39,34 +40,45 @@ def load_data_from_mysql():
 def render_tab_school(df_matrix_school, dfs=None, irt_results=None):
     st.subheader("🏫 Hasil Analisis Statistik Per Sekolah")
 
-    # --- 1. AMBIL DATA (MYSQL UTAMA -> FALLBACK SESSION) ---
-    df_db = load_data_from_mysql()
+    # --- 1. AMBIL DATA (MEMORY UTAMA -> FALLBACK MYSQL) ---
+    df_master = None
+    is_from_mysql = False
 
-    if df_db is not None and not df_db.empty:
-        df_master = df_db.copy()
-        is_from_mysql = True
-    elif df_matrix_school is not None and not df_matrix_school.empty:
-        essential_cols = [
-            c for c in df_matrix_school.columns 
-            if c in [
-                "username", "user_id", "id_peserta", "nama", "mapel", "nama_sekolah", "sekolah", "nama_lembaga", 
-                "kode_sekolah", "npsn", "_school_key", "nama_kabupaten", "kabupaten", 
-                "nama_provinsi", "provinsi", "kd_prop", "kode_provinsi", "skor_mentah", 
-                "Jumlah_Soal", "skor_konversi_ctt", "skor_konversi_rasch", 
-                "skor_konversi_1pl", "skor_konversi_2pl", "skor_konversi_3pl"
+    # Jika data di memori sudah memiliki informasi sekolah dan nilai, gunakan langsung agar cepat
+    cand_df = st.session_state.get("df_peserta_skor")
+    if cand_df is None or cand_df.empty:
+        cand_df = df_matrix_school if (df_matrix_school is not None and not df_matrix_school.empty) else None
+
+    if cand_df is not None and not cand_df.empty:
+        has_sch = any(c in cand_df.columns for c in ["nama_sekolah", "sekolah", "nama_lembaga", "kode_sekolah", "npsn", "_school_key"])
+        has_score = any(c in cand_df.columns for c in ["skor_konversi_ctt", "skor_mentah", "skor_konversi_rasch"])
+        if has_sch and has_score:
+            essential_cols = [
+                c for c in cand_df.columns 
+                if c in [
+                    "username", "user_id", "id_peserta", "nama", "mapel", "nama_sekolah", "sekolah", "nama_lembaga", 
+                    "kode_sekolah", "npsn", "_school_key", "nama_kabupaten", "kabupaten", 
+                    "nama_provinsi", "provinsi", "kd_prop", "kode_provinsi", "skor_mentah", 
+                    "Jumlah_Soal", "skor_konversi_ctt", "skor_konversi_rasch", 
+                    "skor_konversi_1pl", "skor_konversi_2pl", "skor_konversi_3pl"
+                ]
             ]
-        ]
-        if not essential_cols:
-            essential_cols = list(df_matrix_school.columns[:30])
-        
-        df_master = df_matrix_school[essential_cols].copy()
-        is_from_mysql = False
-    else:
-        st.info(
-            "💡 **Informasi:** Berkas **Master Sekolah** (`sekolah`) belum diunggah atau "
-            "data peserta belum diproses ke database MySQL."
-        )
-        return
+            if not essential_cols:
+                essential_cols = list(cand_df.columns[:30])
+            df_master = cand_df[essential_cols].copy()
+            is_from_mysql = False
+
+    if df_master is None or df_master.empty:
+        df_db = load_data_from_mysql()
+        if df_db is not None and not df_db.empty:
+            df_master = df_db.copy()
+            is_from_mysql = True
+        else:
+            st.info(
+                "💡 **Informasi:** Berkas **Master Sekolah** (`sekolah`) belum diunggah atau "
+                "data peserta belum diproses ke database MySQL."
+            )
+            return
 
     # Normalisasi penamaan kolom penting agar seragam
     if "kode_sekolah" not in df_master.columns:
@@ -111,54 +123,27 @@ def render_tab_school(df_matrix_school, dfs=None, irt_results=None):
     # --- 2. DETEKSI METODE NILAI KONVERSI ---
     available_methods = {}
 
-    if is_from_mysql:
-        if "skor_konversi_ctt" in df_master.columns and df_master["skor_konversi_ctt"].notna().any():
-            available_methods["Nilai Konversi (Klasik/CTT)"] = "skor_konversi_ctt"
-        if "skor_konversi_rasch" in df_master.columns and df_master["skor_konversi_rasch"].notna().any():
-            available_methods["Nilai Konversi (IRT - Rasch/1PL)"] = "skor_konversi_rasch"
-        if "skor_konversi_1pl" in df_master.columns and df_master["skor_konversi_1pl"].notna().any() and "Nilai Konversi (IRT - Rasch/1PL)" not in available_methods:
-            available_methods["Nilai Konversi (IRT - Rasch/1PL)"] = "skor_konversi_1pl"
-        if "skor_konversi_2pl" in df_master.columns and df_master["skor_konversi_2pl"].notna().any():
-            available_methods["Nilai Konversi (IRT - 2PL)"] = "skor_konversi_2pl"
-        if "skor_konversi_3pl" in df_master.columns and df_master["skor_konversi_3pl"].notna().any():
-            available_methods["Nilai Konversi (IRT - 3PL)"] = "skor_konversi_3pl"
-    else:
-        if "Nilai_Konversi" in df_master.columns:
-            available_methods["Nilai Konversi (Klasik/CTT)"] = "Nilai_Konversi"
-        elif "skor_mentah" in df_master.columns:
-            available_methods["Skor Mentah (Klasik/CTT)"] = "skor_mentah"
+    # Deteksi langsung kolom skor konversi standar (berlaku baik dari memory maupun MySQL)
+    if "skor_konversi_ctt" in df_master.columns and df_master["skor_konversi_ctt"].notna().any():
+        available_methods["Nilai Konversi (Klasik/CTT)"] = "skor_konversi_ctt"
+    elif "Nilai_Konversi" in df_master.columns and df_master["Nilai_Konversi"].notna().any():
+        available_methods["Nilai Konversi (Klasik/CTT)"] = "Nilai_Konversi"
 
-        if irt_results is None or not irt_results:
-            irt_results = st.session_state.get("irt_results", {})
+    if "skor_konversi_rasch" in df_master.columns and df_master["skor_konversi_rasch"].notna().any():
+        available_methods["Nilai Konversi (IRT - Rasch/1PL)"] = "skor_konversi_rasch"
+    elif "skor_konversi_1pl" in df_master.columns and df_master["skor_konversi_1pl"].notna().any():
+        available_methods["Nilai Konversi (IRT - Rasch/1PL)"] = "skor_konversi_1pl"
 
-        def extract_irt_scores(df_person):
-            for col in ["Nilai_Scaled", "scale_score", "nilai_konversi", "Nilai_Konversi", "skor_skala", "scale", "theta"]:
-                if col in df_person.columns:
-                    return df_person[col].values
-            return None
+    if "skor_konversi_2pl" in df_master.columns and df_master["skor_konversi_2pl"].notna().any():
+        available_methods["Nilai Konversi (IRT - 2PL)"] = "skor_konversi_2pl"
 
-        if irt_results and isinstance(irt_results, dict):
-            for key_model, label_model, col_name in [
-                ("rasch", "Nilai Konversi (IRT - Rasch/1PL)", "Konversi_Rasch"),
-                ("1pl", "Nilai Konversi (IRT - Rasch/1PL)", "Konversi_Rasch"),
-                ("2pl", "Nilai Konversi (IRT - 2PL)", "Konversi_2PL"),
-                ("3pl", "Nilai Konversi (IRT - 3PL)", "Konversi_3PL"),
-            ]:
-                if label_model in available_methods:
-                    continue
-                if key_model in irt_results and isinstance(irt_results[key_model], dict):
-                    df_p = irt_results[key_model].get("df_person")
-                    if df_p is not None and not df_p.empty:
-                        scores = extract_irt_scores(df_p)
-                        if scores is not None and len(scores) == len(df_master):
-                            df_master[col_name] = scores
-                            available_methods[label_model] = col_name
+    if "skor_konversi_3pl" in df_master.columns and df_master["skor_konversi_3pl"].notna().any():
+        available_methods["Nilai Konversi (IRT - 3PL)"] = "skor_konversi_3pl"
 
+    # Fallback jika belum ada skor konversi
     if not available_methods:
         if "skor_mentah" in df_master.columns:
             available_methods["Skor Mentah (Klasik/CTT)"] = "skor_mentah"
-        elif "Nilai_Konversi" in df_master.columns:
-            available_methods["Nilai Konversi (Klasik/CTT)"] = "Nilai_Konversi"
 
     if not available_methods:
         st.error("❌ Tidak ditemukan kolom nilai konversi yang dapat dianalisis.")
@@ -177,6 +162,23 @@ def render_tab_school(df_matrix_school, dfs=None, irt_results=None):
     st.divider()
 
     # --- 4. FILTER MATA PELAJARAN (MULTI-SELECT / GABUNGAN) ---
+    mapel_lookup = {}
+    if dfs and isinstance(dfs, dict) and "mapel" in dfs and dfs["mapel"] is not None and not dfs["mapel"].empty:
+        mapel_lookup = get_mapel_lookup_dict(dfs["mapel"])
+    if not mapel_lookup:
+        mapel_lookup = st.session_state.get("mapel_dict", {})
+    if not mapel_lookup and "val_result" in st.session_state:
+        df_mpl_sess = st.session_state["val_result"].get("dataframes", {}).get("mapel")
+        if df_mpl_sess is not None and not df_mpl_sess.empty:
+            mapel_lookup = get_mapel_lookup_dict(df_mpl_sess)
+    if not mapel_lookup:
+        mapel_lookup = get_mapel_lookup_dict(None)
+
+    if "mapel" in df_master.columns and mapel_lookup:
+        df_master["mapel"] = df_master["mapel"].map(
+            lambda x: mapel_lookup.get(str(x).strip().upper(), mapel_lookup.get(str(x).strip(), str(x).strip()))
+        )
+
     available_mapels = []
     if "mapel" in df_master.columns:
         available_mapels = sorted([

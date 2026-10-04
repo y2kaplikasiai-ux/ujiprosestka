@@ -3,17 +3,30 @@ import pandas as pd
 
 
 def get_item_columns(df):
-    """Mengekstrak kolom kode soal dari DataFrame."""
+    """Mengekstrak kolom kode soal dari DataFrame secara robust."""
     non_item_keywords = [
         'username',
+        'user_id',
+        'id_peserta',
         'tahun',
         'kode_jenjang',
         'kode_mapel',
+        'kd_mapel',
+        'mapel',
+        'mata_pelajaran',
+        'subject',
         'kode_paket',
+        'kd_paket',
+        'paket',
         'list_soal',
         'respon',
+        'jawaban',
+        'kunci',
         'skor_mentah',
         'nilai_konversi',
+        'skor_konversi',
+        'total_skor',
+        'skor',
         'no',
         'no.',
         'id',
@@ -22,6 +35,13 @@ def get_item_columns(df):
         'npsn',
         'kelas',
         'unnamed',
+        'kabupaten',
+        'provinsi',
+        'propinsi',
+        'kd_prop',
+        'kode_provinsi',
+        '_school_key',
+        '_prop_key_user',
         'jumlah_soal_dikerjakan',
         'jumlah_soal',
     ]
@@ -31,6 +51,11 @@ def get_item_columns(df):
         col_str = str(col).strip().lower()
         if any(kw in col_str for kw in non_item_keywords):
             continue
+        # Pastikan kolom bertipe numerik atau dapat dikonversi ke numerik
+        if df[col].dtype == object:
+            s_num = pd.to_numeric(df[col], errors='coerce')
+            if s_num.notna().sum() == 0:
+                continue
         item_cols.append(col)
 
     return item_cols
@@ -75,10 +100,13 @@ def calculate_reliability_by_package(df_matrix, df_respon=None):
 
     alphas = []
     for _, group in target_df.groupby(col_paket):
-        pkg_item_cols = [c for c in get_item_columns(group) if group[c].notna().sum() > 0]
+        pkg_item_cols = [
+            c for c in get_item_columns(group)
+            if pd.to_numeric(group[c], errors='coerce').notna().sum() > 0
+        ]
         
         if len(pkg_item_cols) > 1 and len(group) > 1:
-            X_pkg = group[pkg_item_cols].to_numpy(dtype=np.float32)
+            X_pkg = group[pkg_item_cols].apply(pd.to_numeric, errors='coerce').to_numpy(dtype=np.float32)
             item_vars = np.nanvar(X_pkg, axis=0, ddof=1).sum()
             
             total_scores = np.nansum(X_pkg, axis=1)
@@ -182,8 +210,11 @@ def run_ctt_analysis(df_matrix, df_respon=None, df_kunci=None):
     """Fungsi utama analisis CTT yang menangani missing value (NaN) dengan benar."""
     raw_item_cols = get_item_columns(df_matrix)
     
-    # Hanya sertakan kolom soal yang memiliki setidaknya 1 respon aktif (bukan full NaN)
-    item_cols = [c for c in raw_item_cols if df_matrix[c].notna().sum() > 0]
+    # Hanya sertakan kolom soal yang memiliki setidaknya 1 nilai numerik valid (bukan full NaN)
+    item_cols = [
+        c for c in raw_item_cols
+        if pd.to_numeric(df_matrix[c], errors='coerce').notna().sum() > 0
+    ]
     
     n_items = len(item_cols)
     n_persons = len(df_matrix)
@@ -197,8 +228,8 @@ def run_ctt_analysis(df_matrix, df_respon=None, df_kunci=None):
             'df_result': df_matrix,
         }
 
-    # Matriks numerik (float32) yang mendukung np.nan
-    X_mat = df_matrix[item_cols].to_numpy(dtype=np.float32)
+    # Matriks numerik (float32) yang mendukung np.nan secara aman
+    X_mat = df_matrix[item_cols].apply(pd.to_numeric, errors='coerce').to_numpy(dtype=np.float32)
 
     # Hitung skor mentah per siswa (mengabaikan NaN)
     skor_mentah = np.nansum(X_mat, axis=1)

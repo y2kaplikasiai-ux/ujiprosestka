@@ -19,7 +19,7 @@ from db_helper import (
 from irt_analysis import run_irt_analysis
 from scoring import extract_active_soal_from_respon, process_scoring
 from styles import load_custom_css
-from validators import validate_7_files
+from validators import validate_7_files, get_mapel_lookup_dict
 
 # Import modul UI dari folder views
 from views.tab_ctt import render_tab_ctt
@@ -697,14 +697,15 @@ for key, files_list in raw_file_collections.items():
 
 # Jika ada tabel master mapel, selaraskan nama mapel pada respon dan kunci
 if uploaded_files.get("mapel") is not None and not uploaded_files["mapel"].empty:
-    df_mpl = uploaded_files["mapel"].copy()
-    col_kd = next((c for c in df_mpl.columns if "kd" in str(c).lower() or "kode" in str(c).lower() or "id" in str(c).lower()), None)
-    col_nm = next((c for c in df_mpl.columns if "nama" in str(c).lower() or "mapel" in str(c).lower()), None)
-    if col_kd and col_nm:
-        mapel_dict_lookup = dict(zip(df_mpl[col_kd].astype(str).str.strip().str.upper(), df_mpl[col_nm].astype(str).str.strip().str.upper()))
+    mapel_dict_lookup = get_mapel_lookup_dict(uploaded_files["mapel"])
+    if mapel_dict_lookup:
+        st.session_state["mapel_dict"] = mapel_dict_lookup
+        st.session_state["df_mapel"] = uploaded_files["mapel"]
         for t_k in ["respon", "kunci"]:
             if uploaded_files.get(t_k) is not None and "mapel" in uploaded_files[t_k].columns:
-                uploaded_files[t_k]["mapel"] = uploaded_files[t_k]["mapel"].map(lambda x: mapel_dict_lookup.get(x, x))
+                uploaded_files[t_k]["mapel"] = uploaded_files[t_k]["mapel"].map(
+                    lambda x: mapel_dict_lookup.get(str(x).strip().upper(), mapel_dict_lookup.get(str(x).strip(), str(x).strip()))
+                )
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Status Deteksi Berkas:")
@@ -882,11 +883,21 @@ if btn_process:
                 progress_bar.progress(25)
 
                 dfs = val_result["dataframes"]
+                if "mapel" in dfs and dfs["mapel"] is not None and not dfs["mapel"].empty:
+                    st.session_state["mapel_dict"] = get_mapel_lookup_dict(dfs["mapel"])
+                    st.session_state["df_mapel"] = dfs["mapel"]
+
                 df_kunci_filtered = filter_kunci_by_respon_kode(
                     dfs["respon"], dfs["kunci"]
                 )
                 dfs["kunci"] = df_kunci_filtered
                 df_matrix = process_scoring(dfs["respon"], df_kunci_filtered)
+
+                mpl_lookup_active = st.session_state.get("mapel_dict") or get_mapel_lookup_dict(dfs.get("mapel"))
+                if "mapel" in df_matrix.columns and mpl_lookup_active:
+                    df_matrix["mapel"] = df_matrix["mapel"].map(
+                        lambda x: mpl_lookup_active.get(str(x).strip().upper(), mpl_lookup_active.get(str(x).strip(), str(x).strip()))
+                    )
 
                 st.session_state["df_matrix"] = df_matrix
                 t2_dur = time.time() - t2_start
@@ -918,18 +929,48 @@ if btn_process:
                     in [
                         "username",
                         "user_id",
+                        "id_peserta",
                         "nama",
+                        "mapel",
+                        "mata_pelajaran",
+                        "subject",
+                        "kode_mapel",
+                        "kd_mapel",
                         "kode_soal",
                         "kode_paket",
+                        "kd_paket",
+                        "paket",
                         "total_skor",
                         "skor",
                         "skor_mentah",
                         "nilai_konversi",
+                        "skor_konversi",
                         "jumlah_soal",
+                        "_school_key",
+                        "_prop_key_user",
+                        "kd_prop",
+                        "kode_provinsi",
                     ]
+                    or any(
+                        kw in str(c).strip().lower()
+                        for kw in [
+                            "username",
+                            "user_id",
+                            "mapel",
+                            "paket",
+                            "sekolah",
+                            "kabupaten",
+                            "provinsi",
+                            "jumlah_soal",
+                            "skor",
+                            "konversi",
+                        ]
+                    )
                 ]
                 item_cols = [
-                    c for c in df_irt_input.columns if c not in non_item_cols
+                    c for c in df_irt_input.columns
+                    if c not in non_item_cols
+                    and (df_irt_input[c].dtype != object or pd.to_numeric(df_irt_input[c], errors="coerce").notna().sum() > 0)
                 ]
 
                 # MEMORY OPTIMIZATION: Chunks processing to avoid ArrayMemoryError for huge datasets (~3.4M rows)
@@ -1224,6 +1265,12 @@ if btn_process:
                 df_matrix_school["kode_kabupaten"] = clean_kd_rayons
                 df_matrix_school["nama_kabupaten"] = clean_kabs
 
+                mpl_lookup_active = st.session_state.get("mapel_dict") or get_mapel_lookup_dict(dfs.get("mapel") if "dfs" in locals() else None)
+                if "mapel" in df_matrix_school.columns and mpl_lookup_active:
+                    df_matrix_school["mapel"] = df_matrix_school["mapel"].map(
+                        lambda x: mpl_lookup_active.get(str(x).strip().upper(), mpl_lookup_active.get(str(x).strip(), str(x).strip()))
+                    )
+
                 st.session_state["df_matrix_school"] = df_matrix_school
 
                 # --- PENYUSUNAN DATAFRAME UNTUK PENYIMPANAN MYSQL ---
@@ -1237,11 +1284,14 @@ if btn_process:
 
                     usr_col_src = "username" if "username" in df_base.columns else df_base.columns[0]
                     df_peserta_save["username"] = df_base[usr_col_src].astype(str).str.strip()
-                    df_peserta_save["mapel"] = (
-                        df_base["mapel"].fillna("UMUM").astype(str).str.strip().str.upper()
-                        if "mapel" in df_base.columns
-                        else "UMUM"
-                    )
+                    if "mapel" in df_base.columns and mpl_lookup_active:
+                        df_peserta_save["mapel"] = df_base["mapel"].fillna("UMUM").map(
+                            lambda x: mpl_lookup_active.get(str(x).strip().upper(), mpl_lookup_active.get(str(x).strip(), str(x).strip()))
+                        )
+                    elif "mapel" in df_base.columns:
+                        df_peserta_save["mapel"] = df_base["mapel"].fillna("UMUM").astype(str).str.strip()
+                    else:
+                        df_peserta_save["mapel"] = "UMUM"
                     df_peserta_save["nama_sekolah"] = (
                         df_base["nama_sekolah"]
                         if "nama_sekolah" in df_base.columns
@@ -1505,6 +1555,28 @@ if btn_process:
                             .reset_index()
                         )
 
+                    # Pastikan kolom-kolom skor konversi CTT dan IRT tersinkronisasi ke df_matrix_school & df_matrix
+                    for col_skor in [
+                        "skor_mentah",
+                        "Jumlah_Soal",
+                        "skor_konversi_ctt",
+                        "skor_konversi_rasch",
+                        "skor_konversi_1pl",
+                        "skor_konversi_2pl",
+                        "skor_konversi_3pl",
+                    ]:
+                        if col_skor in df_peserta_save.columns:
+                            df_matrix_school[col_skor] = df_peserta_save[col_skor].values
+                            if df_matrix is not None and len(df_matrix) == len(df_peserta_save):
+                                df_matrix[col_skor] = df_peserta_save[col_skor].values
+
+                    # Simpan data siap saji langsung ke session_state agar tab lain instan tanpa query database
+                    st.session_state["df_peserta_skor"] = df_peserta_save
+                    st.session_state["df_matrix_school"] = df_matrix_school
+                    st.session_state["df_sekolah_save"] = df_sekolah_save
+                    st.session_state["df_soal_save"] = df_soal_save
+                    st.session_state["df_summary_save"] = df_summary_save
+
                     # Eksekusi Penyimpanan ke Database MySQL & Cache Lokal
                     saved_ok, msg_db = prepare_and_save_analysis(
                         df_peserta=df_peserta_save,
@@ -1538,7 +1610,9 @@ if btn_process:
                 t6_start = time.time()
                 progress_bar.progress(95)
 
-                time.sleep(0.3)
+                # Optimasi: Garbage collection dan pra-penyiapan memori agar visualisasi responsif
+                import gc
+                gc.collect()
 
                 t6_dur = time.time() - t6_start
                 update_step(5, "complete", t6_dur)
@@ -1608,23 +1682,41 @@ else:
     )
 
     with tab_val:
-        if val_result:
-            render_tab_validation(val_result)
-        else:
-            st.info("Data dimuat langsung dari database.")
+        try:
+            if val_result:
+                render_tab_validation(val_result)
+            else:
+                st.info("Data dimuat langsung dari database.")
+        except Exception as e_val:
+            st.error(f"⚠️ Terjadi kendala saat menampilkan Tab Validasi Data: {e_val}")
 
     with tab_scoring:
-        render_tab_scoring(df_matrix)
+        try:
+            render_tab_scoring(df_matrix, dfs)
+        except Exception as e_score:
+            st.error(f"⚠️ Terjadi kendala saat menampilkan Tab Scoring Engine: {e_score}")
 
     with tab_ctt:
-        render_tab_ctt(ctt_res, df_matrix, dfs)
+        try:
+            render_tab_ctt(ctt_res, df_matrix, dfs)
+        except Exception as e_ctt:
+            st.error(f"⚠️ Terjadi kendala saat menampilkan Tab Analisis CTT: {e_ctt}")
 
     with tab_irt:
-        res_irt = render_tab_irt(df_matrix, dfs, ctt_res)
+        try:
+            res_irt = render_tab_irt(df_matrix, dfs, ctt_res)
+        except Exception as e_irt:
+            st.error(f"⚠️ Terjadi kendala saat menampilkan Tab Analisis IRT: {e_irt}")
 
     with tab_school:
-        current_irt_results = st.session_state.get("irt_results", {})
-        render_tab_school(df_matrix_school, dfs, irt_results=current_irt_results)
+        try:
+            current_irt_results = st.session_state.get("irt_results", {})
+            render_tab_school(df_matrix_school, dfs, irt_results=current_irt_results)
+        except Exception as e_sch:
+            st.error(f"⚠️ Terjadi kendala saat menampilkan Tab Analisis Sekolah: {e_sch}")
 
     with tab_region:
-        render_tab_region(df_matrix_school if not df_matrix_school.empty else df_matrix, dfs)
+        try:
+            render_tab_region(df_matrix_school if not df_matrix_school.empty else df_matrix, dfs)
+        except Exception as e_reg:
+            st.error(f"⚠️ Terjadi kendala saat menampilkan Tab Analisis Wilayah: {e_reg}")

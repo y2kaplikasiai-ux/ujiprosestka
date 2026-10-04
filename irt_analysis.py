@@ -15,19 +15,30 @@ def get_item_columns(df):
     non_item_keywords = [
         "username",
         "user_id",
+        "id_peserta",
         "tahun",
         "kode_jenjang",
         "kode_mapel",
+        "kd_mapel",
+        "mapel",
+        "mata_pelajaran",
+        "subject",
         "kode_paket",
+        "kd_paket",
+        "paket",
         "list_soal",
         "respon",
+        "jawaban",
+        "kunci",
         "skor_mentah",
         "nilai_konversi",
         "nilai_scaled",
+        "skor_konversi",
+        "total_skor",
+        "skor",
         "no",
         "no.",
         "id",
-        "id_peserta",
         "nama",
         "sekolah",
         "npsn",
@@ -38,16 +49,22 @@ def get_item_columns(df):
         "_school_key",
         "_prop_key_user",
         "kd_prop",
+        "kode_provinsi",
         "nama_sekolah",
         "nama_kabupaten",
         "nama_provinsi",
     ]
 
-    item_cols = [
-        col
-        for col in df.columns
-        if not any(kw in str(col).strip().lower() for kw in non_item_keywords)
-    ]
+    item_cols = []
+    for col in df.columns:
+        col_str = str(col).strip().lower()
+        if any(kw in col_str for kw in non_item_keywords):
+            continue
+        if df[col].dtype == object:
+            s_num = pd.to_numeric(df[col], errors="coerce")
+            if s_num.notna().sum() == 0:
+                continue
+        item_cols.append(col)
     return item_cols
 
 

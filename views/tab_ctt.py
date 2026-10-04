@@ -3,6 +3,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
+from validators import get_mapel_lookup_dict
 
 
 def render_tab_ctt(ctt_res, df_matrix=None, dfs=None):
@@ -49,6 +50,22 @@ def render_tab_ctt(ctt_res, df_matrix=None, dfs=None):
             if len(m_vals) == 1:
                 df_items["mapel"] = str(m_vals[0]).upper()
 
+    mapel_lookup = {}
+    if dfs and isinstance(dfs, dict) and "mapel" in dfs and dfs["mapel"] is not None and not dfs["mapel"].empty:
+        mapel_lookup = get_mapel_lookup_dict(dfs["mapel"])
+    if not mapel_lookup:
+        mapel_lookup = st.session_state.get("mapel_dict", {})
+    if not mapel_lookup and "val_result" in st.session_state:
+        df_mpl_sess = st.session_state["val_result"].get("dataframes", {}).get("mapel")
+        if df_mpl_sess is not None and not df_mpl_sess.empty:
+            mapel_lookup = get_mapel_lookup_dict(df_mpl_sess)
+    if not mapel_lookup:
+        mapel_lookup = get_mapel_lookup_dict(None)
+
+    for c in df_items.columns:
+        if c.lower() in ["mapel", "mata_pelajaran", "mata pelajaran", "subject", "paket"]:
+            df_items[c] = df_items[c].map(lambda x: mapel_lookup.get(str(x).strip().upper(), mapel_lookup.get(str(x).strip(), str(x).strip())))
+
     mapel_cols = [
         c
         for c in df_items.columns
@@ -57,14 +74,37 @@ def render_tab_ctt(ctt_res, df_matrix=None, dfs=None):
     ]
     if mapel_cols:
         mapel_col = mapel_cols[0]
-        list_mapel = ["Semua"] + sorted(
-            [str(x) for x in df_items[mapel_col].dropna().unique().tolist()]
+        list_mapel = sorted(
+            [
+                str(x)
+                for x in df_items[mapel_col].dropna().unique().tolist()
+                if str(x).strip() not in ["", "nan", "None", "-"]
+            ]
         )
-        selected_mapel = st.selectbox(
-            "Filter Mata Pelajaran / Paket:", options=list_mapel, key="filter_ctt_mapel"
-        )
-        if selected_mapel != "Semua":
+        if list_mapel:
+            selected_mapel = st.selectbox(
+                "Pilih Mata Pelajaran:", options=list_mapel, key="filter_ctt_mapel"
+            )
             df_items = df_items[df_items[mapel_col] == selected_mapel].copy()
+
+            if df_matrix is not None and not df_matrix.empty:
+                mat_m_col = next(
+                    (
+                        c
+                        for c in df_matrix.columns
+                        if c.lower()
+                        in ["mapel", "mata_pelajaran", "mata pelajaran", "subject", "paket"]
+                    ),
+                    None,
+                )
+                if mat_m_col:
+                    m_norm = df_matrix[mat_m_col].map(
+                        lambda x: mapel_lookup.get(
+                            str(x).strip().upper(),
+                            mapel_lookup.get(str(x).strip(), str(x).strip()),
+                        )
+                    )
+                    df_matrix = df_matrix[m_norm == selected_mapel].copy()
 
     p_col = next(
         (

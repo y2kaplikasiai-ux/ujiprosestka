@@ -14,6 +14,76 @@ def clean_col(col):
     return re.sub(r"[^a-z0-9]", "", str(col).strip().lower())
 
 
+KNOWN_MAPEL_FALLBACK = {
+    "AMATW": "Matematika Wajib",
+    "ABIGW": "Bahasa Inggris Wajib",
+    "ABINW": "Bahasa Indonesia Wajib",
+    "SEJ": "Sejarah",
+    "EKO": "Ekonomi",
+    "GEO": "Geografi",
+    "SOS": "Sosiologi",
+    "BIO": "Biologi",
+    "FIS": "Fisika",
+    "KIM": "Kimia",
+    "MAT": "Matematika",
+    "BIG": "Bahasa Inggris",
+    "BIN": "Bahasa Indonesia",
+}
+
+
+def get_mapel_lookup_dict(df_mpl=None):
+    """Mengekstrak kamus pemetaan kode_mapel -> nama_mapel dari DataFrame tabel master mapel."""
+    lookup = dict(KNOWN_MAPEL_FALLBACK)
+    if df_mpl is None or not isinstance(df_mpl, pd.DataFrame) or df_mpl.empty:
+        return lookup
+
+    cols = list(df_mpl.columns)
+    col_kd = None
+    for c in cols:
+        clean = re.sub(r"[^a-z0-9]", "", str(c).lower())
+        if clean in ["kodemapel", "kdmapel", "idmapel", "kodematapelajaran", "kd", "kode"]:
+            col_kd = c
+            break
+    if not col_kd:
+        for c in cols:
+            low = str(c).lower()
+            if ("kode" in low or "kd" in low or "id" in low) and "nama" not in low:
+                col_kd = c
+                break
+    if not col_kd:
+        col_kd = cols[0]
+
+    col_nm = None
+    for c in cols:
+        if c == col_kd:
+            continue
+        clean = re.sub(r"[^a-z0-9]", "", str(c).lower())
+        if clean in ["namamapel", "namamatapelajaran", "nama", "matapelajaran", "mapel"]:
+            col_nm = c
+            break
+    if not col_nm:
+        for c in cols:
+            if c == col_kd:
+                continue
+            low = str(c).lower()
+            if "nama" in low or "pelajaran" in low or (low == "mapel") or ("mapel" in low and "kode" not in low and "kd" not in low):
+                col_nm = c
+                break
+    if not col_nm:
+        other_cols = [c for c in cols if c != col_kd]
+        if other_cols:
+            col_nm = other_cols[0]
+
+    if col_kd and col_nm and col_kd != col_nm:
+        for _, row in df_mpl.iterrows():
+            k_val = str(row[col_kd]).strip().upper()
+            n_val = str(row[col_nm]).strip()
+            if k_val and k_val not in ["NAN", "NONE", ""]:
+                lookup[k_val] = n_val
+                lookup[k_val.lower()] = n_val
+    return lookup
+
+
 def read_file_flexible(file_obj):
     """Membaca file CSV/Excel secara fleksibel atau mengembalikan DataFrame jika sudah dibaca."""
     if file_obj is None:
