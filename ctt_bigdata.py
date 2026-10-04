@@ -1,4 +1,5 @@
 import time
+# pyrefly: ignore [missing-import]
 import polars as pl
 
 
