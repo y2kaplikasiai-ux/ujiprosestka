@@ -156,3 +156,14 @@ def convert_df_to_csv_bytes(df: pd.DataFrame, delimiter: str = ';') -> bytes:
     output = io.BytesIO()
     df.to_csv(output, index=False, sep=delimiter, encoding='utf-8-sig')
     return output.getvalue()
+
+
+def convert_df_to_excel_bytes(df: pd.DataFrame, sheet_name: str = "Rekap_Nilai") -> bytes:
+    """
+    Mengonversi DataFrame pandas menjadi bytes berformat Excel (.xlsx).
+    """
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df.to_excel(writer, sheet_name=sheet_name, index=False)
+    output.seek(0)
+    return output.getvalue()

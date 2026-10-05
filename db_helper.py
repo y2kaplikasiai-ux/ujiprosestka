@@ -18,8 +18,6 @@ _ACTIVE_CONFIG = None
 
 def get_active_config():
     """Mengambil konfigurasi aktif (dari session_state, env, atau cache)."""
-    global _ACTIVE_CONFIG
-    
     # Cek apakah ada konfigurasi di Streamlit session_state
     try:
         import streamlit as st
@@ -164,6 +162,9 @@ def init_db_tables() -> bool:
                 CREATE TABLE IF NOT EXISTS tb_peserta_skor (
                     username VARCHAR(100) NOT NULL,
                     mapel VARCHAR(100) NOT NULL DEFAULT 'UMUM',
+                    nisn VARCHAR(50),
+                    nama VARCHAR(255),
+                    jenis_kelamin VARCHAR(20),
                     nama_sekolah VARCHAR(255),
                     kode_sekolah VARCHAR(50),
                     nama_kabupaten VARCHAR(100),
@@ -192,6 +193,19 @@ def init_db_tables() -> bool:
                     conn.execute(text("ALTER TABLE tb_peserta_skor DROP PRIMARY KEY, ADD COLUMN mapel VARCHAR(100) NOT NULL DEFAULT 'UMUM' AFTER username, ADD PRIMARY KEY (username, mapel);"))
             except Exception:
                 pass
+
+            # Cek kolom tambahan (nisn, nama, jenis_kelamin) di tb_peserta_skor
+            for col_chk, col_type in [
+                ("nisn", "VARCHAR(50) AFTER mapel"),
+                ("nama", "VARCHAR(255) AFTER nisn"),
+                ("jenis_kelamin", "VARCHAR(20) AFTER nama"),
+            ]:
+                try:
+                    res_c = conn.execute(text(f"SHOW COLUMNS FROM tb_peserta_skor LIKE '{col_chk}';")).fetchall()
+                    if not res_c:
+                        conn.execute(text(f"ALTER TABLE tb_peserta_skor ADD COLUMN {col_chk} {col_type};"))
+                except Exception:
+                    pass
 
             # 2. Tabel Parameter Soal (Primary Key: kode_soal, mapel)
             conn.execute(
@@ -281,7 +295,9 @@ def init_db_tables() -> bool:
                     """
                 CREATE TABLE IF NOT EXISTS tb_master_biodata (
                     username VARCHAR(100) PRIMARY KEY,
+                    nisn VARCHAR(50),
                     nama VARCHAR(255),
+                    jenis_kelamin VARCHAR(20),
                     kode_sekolah VARCHAR(50),
                     nama_sekolah VARCHAR(255),
                     nama_kabupaten VARCHAR(100),
@@ -292,6 +308,18 @@ def init_db_tables() -> bool:
             """
                 )
             )
+
+            # Cek kolom tambahan (nisn, jenis_kelamin) di tb_master_biodata
+            for col_chk, col_type in [
+                ("nisn", "VARCHAR(50) AFTER username"),
+                ("jenis_kelamin", "VARCHAR(20) AFTER nama"),
+            ]:
+                try:
+                    res_b = conn.execute(text(f"SHOW COLUMNS FROM tb_master_biodata LIKE '{col_chk}';")).fetchall()
+                    if not res_b:
+                        conn.execute(text(f"ALTER TABLE tb_master_biodata ADD COLUMN {col_chk} {col_type};"))
+                except Exception:
+                    pass
 
             # 7. Tabel Master Kunci Jawaban
             conn.execute(
@@ -315,6 +343,47 @@ def init_db_tables() -> bool:
                 CREATE TABLE IF NOT EXISTS tb_master_mapel (
                     kode_mapel VARCHAR(50) PRIMARY KEY,
                     nama_mapel VARCHAR(100)
+                );
+            """
+                )
+            )
+
+            # 9. Tabel Master Kisi-Kisi / Kompetensi
+            conn.execute(
+                text(
+                    """
+                CREATE TABLE IF NOT EXISTS tb_master_kompetensi (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    kd_mapel VARCHAR(50),
+                    mapel VARCHAR(100),
+                    kodebutir VARCHAR(100),
+                    elemen VARCHAR(255),
+                    subelemen VARCHAR(255),
+                    kompetensi TEXT,
+                    subkempetensi TEXT,
+                    indikator TEXT,
+                    paket VARCHAR(50),
+                    INDEX idx_komp_mapel (kd_mapel),
+                    INDEX idx_komp_butir (kodebutir)
+                );
+            """
+                )
+            )
+
+            # 10. Tabel Master Pemetaan Paket
+            conn.execute(
+                text(
+                    """
+                CREATE TABLE IF NOT EXISTS tb_master_peta_paket (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    kode_mapel VARCHAR(50),
+                    kode_paket VARCHAR(50),
+                    no_urut_soal INT,
+                    namasoal VARCHAR(100),
+                    zona VARCHAR(20),
+                    kode_sesi VARCHAR(20),
+                    INDEX idx_pkt_mapel (kode_mapel),
+                    INDEX idx_pkt_soal (namasoal)
                 );
             """
                 )
@@ -408,7 +477,7 @@ def prepare_and_save_analysis(
         # Filter kolom sesuai skema tabel
         if df_peserta_clean is not None and not df_peserta_clean.empty:
             valid_cols = [
-                "username", "mapel", "nama_sekolah", "kode_sekolah", "nama_kabupaten",
+                "username", "mapel", "nisn", "nama", "jenis_kelamin", "nama_sekolah", "kode_sekolah", "nama_kabupaten",
                 "nama_provinsi", "kode_provinsi", "skor_mentah", "skor_konversi_ctt",
                 "skor_konversi_rasch", "skor_konversi_1pl", "skor_konversi_2pl",
                 "skor_konversi_3pl", "Jumlah_Soal"
@@ -517,7 +586,7 @@ def prepare_and_save_analysis(
                 """
                     )
                 )
-            except Exception as e_agg:
+            except Exception:
                 # Fallback jika query agregasi SQL mengalami kendala
                 if df_sekolah_clean is not None and not df_sekolah_clean.empty:
                     df_sekolah_clean.to_sql(
@@ -559,6 +628,8 @@ def reset_database(mode: str = "response_only") -> tuple[bool, str]:
                 "tb_master_sekolah",
                 "tb_master_kunci",
                 "tb_master_mapel",
+                "tb_master_kompetensi",
+                "tb_master_peta_paket",
             ])
 
         with engine.begin() as conn:
@@ -608,15 +679,23 @@ def save_master_data_to_db(dfs: dict) -> tuple[bool, str]:
                 df_sek_save["kode_provinsi"] = df_sek[col_kdp].astype(str).str.strip() if col_kdp else "-"
                 df_sek_save = df_sek_save.drop_duplicates(subset=["kode_sekolah"])
 
-                conn.execute(text("TRUNCATE TABLE tb_master_sekolah;"))
-                df_sek_save.to_sql("tb_master_sekolah", conn, if_exists="append", index=False, chunksize=5000)
+                try:
+                    curr_c = conn.execute(text("SELECT COUNT(*) FROM tb_master_sekolah;")).scalar() or 0
+                except Exception:
+                    curr_c = 0
+
+                if curr_c != len(df_sek_save):
+                    conn.execute(text("TRUNCATE TABLE tb_master_sekolah;"))
+                    df_sek_save.to_sql("tb_master_sekolah", conn, if_exists="append", index=False, chunksize=10000)
 
             # 2. Master Biodata
             if "biodata" in dfs and dfs["biodata"] is not None and not dfs["biodata"].empty:
                 df_bio = dfs["biodata"].copy()
                 df_bio.columns = [str(c).strip().lower() for c in df_bio.columns]
-                col_u = next((c for c in df_bio.columns if str(c) in ["username", "user_id", "id_peserta", "nisn", "id"]), df_bio.columns[0])
+                col_u = next((c for c in df_bio.columns if str(c) in ["username", "user_id", "id_peserta", "idpeserta", "id"]), df_bio.columns[0])
+                col_nisn = next((c for c in df_bio.columns if "nisn" in c), None)
                 col_n = next((c for c in df_bio.columns if "nama" in c and "sekolah" not in c and "kabupaten" not in c and "provinsi" not in c), None)
+                col_jk = next((c for c in df_bio.columns if any(kw in c for kw in ["jenis_kelamin", "jeniskelamin", "jk", "gender", "sex", "kelamin", "l/p", "lp"])), None)
                 col_sek = next((c for c in df_bio.columns if "sekolah" in c), None)
                 col_kab = next((c for c in df_bio.columns if "kabupaten" in c or "kota" in c), None)
                 col_prov = next((c for c in df_bio.columns if "provinsi" in c or "propinsi" in c), None)
@@ -624,7 +703,9 @@ def save_master_data_to_db(dfs: dict) -> tuple[bool, str]:
 
                 df_bio_save = pd.DataFrame()
                 df_bio_save["username"] = df_bio[col_u].astype(str).str.strip()
+                df_bio_save["nisn"] = df_bio[col_nisn].astype(str).str.strip() if col_nisn else "-"
                 df_bio_save["nama"] = df_bio[col_n].astype(str).str.strip() if col_n else "-"
+                df_bio_save["jenis_kelamin"] = df_bio[col_jk].astype(str).str.strip() if col_jk else "-"
                 df_bio_save["kode_sekolah"] = df_bio[col_sek].astype(str).str[:9].str.upper() if col_sek else "-"
                 df_bio_save["nama_sekolah"] = df_bio[col_sek].astype(str).str.strip() if col_sek else "-"
                 df_bio_save["nama_kabupaten"] = df_bio[col_kab].astype(str).str.strip() if col_kab else "-"
@@ -632,8 +713,14 @@ def save_master_data_to_db(dfs: dict) -> tuple[bool, str]:
                 df_bio_save["kd_prop"] = df_bio[col_kdp].astype(str).str.strip() if col_kdp else "-"
                 df_bio_save = df_bio_save.drop_duplicates(subset=["username"])
 
-                conn.execute(text("TRUNCATE TABLE tb_master_biodata;"))
-                df_bio_save.to_sql("tb_master_biodata", conn, if_exists="append", index=False, chunksize=10000)
+                try:
+                    curr_c = conn.execute(text("SELECT COUNT(*) FROM tb_master_biodata;")).scalar() or 0
+                except Exception:
+                    curr_c = 0
+
+                if curr_c != len(df_bio_save):
+                    conn.execute(text("TRUNCATE TABLE tb_master_biodata;"))
+                    df_bio_save.to_sql("tb_master_biodata", conn, if_exists="append", index=False, chunksize=25000)
 
             # 3. Master Kunci
             if "kunci" in dfs and dfs["kunci"] is not None and not dfs["kunci"].empty:
@@ -665,8 +752,84 @@ def save_master_data_to_db(dfs: dict) -> tuple[bool, str]:
                 df_m_save["nama_mapel"] = df_m[col_nm].astype(str).str.strip()
                 df_m_save = df_m_save.drop_duplicates(subset=["kode_mapel"])
 
-                conn.execute(text("TRUNCATE TABLE tb_master_mapel;"))
-                df_m_save.to_sql("tb_master_mapel", conn, if_exists="append", index=False)
+                try:
+                    curr_c = conn.execute(text("SELECT COUNT(*) FROM tb_master_mapel;")).scalar() or 0
+                except Exception:
+                    curr_c = 0
+
+                if curr_c != len(df_m_save):
+                    conn.execute(text("TRUNCATE TABLE tb_master_mapel;"))
+                    df_m_save.to_sql("tb_master_mapel", conn, if_exists="append", index=False)
+
+            # 5. Master Kompetensi / Kisi-Kisi
+            if "kompetensi" in dfs and dfs["kompetensi"] is not None and not dfs["kompetensi"].empty:
+                try:
+                    df_komp = dfs["kompetensi"].copy()
+                    df_komp.columns = [str(c).strip().lower() for c in df_komp.columns]
+                    col_km = next((c for c in df_komp.columns if "kd_mapel" in c or "kodemapel" in c), None)
+                    col_m = next((c for c in df_komp.columns if c in ["mapel", "nama_mapel"]), None)
+                    col_b = next((c for c in df_komp.columns if "kodebutir" in c or "butir" in c or "soal" in c), None)
+                    col_el = next((c for c in df_komp.columns if "elemen" in c and "sub" not in c), None)
+                    col_subel = next((c for c in df_komp.columns if "subelemen" in c), None)
+                    col_kmp = next((c for c in df_komp.columns if "kompetensi" in c and "sub" not in c), None)
+                    col_subkmp = next((c for c in df_komp.columns if "subkempetensi" in c or "subkompetensi" in c), None)
+                    col_ind = next((c for c in df_komp.columns if "indikator" in c), None)
+                    col_pkt = next((c for c in df_komp.columns if "paket" in c), None)
+
+                    df_komp_save = pd.DataFrame()
+                    df_komp_save["kd_mapel"] = df_komp[col_km].astype(str).str.strip().str.upper() if col_km else "-"
+                    df_komp_save["mapel"] = df_komp[col_m].astype(str).str.strip() if col_m else "-"
+                    df_komp_save["kodebutir"] = df_komp[col_b].astype(str).str.strip() if col_b else "-"
+                    df_komp_save["elemen"] = df_komp[col_el].astype(str).str.strip() if col_el else "-"
+                    df_komp_save["subelemen"] = df_komp[col_subel].astype(str).str.strip() if col_subel else "-"
+                    df_komp_save["kompetensi"] = df_komp[col_kmp].astype(str).str.strip() if col_kmp else "-"
+                    df_komp_save["subkempetensi"] = df_komp[col_subkmp].astype(str).str.strip() if col_subkmp else "-"
+                    df_komp_save["indikator"] = df_komp[col_ind].astype(str).str.strip() if col_ind else "-"
+                    df_komp_save["paket"] = df_komp[col_pkt].astype(str).str.strip() if col_pkt else "-"
+                    df_komp_save = df_komp_save.drop_duplicates()
+
+                    try:
+                        curr_c = conn.execute(text("SELECT COUNT(*) FROM tb_master_kompetensi;")).scalar() or 0
+                    except Exception:
+                        curr_c = 0
+
+                    if curr_c != len(df_komp_save):
+                        conn.execute(text("TRUNCATE TABLE tb_master_kompetensi;"))
+                        df_komp_save.to_sql("tb_master_kompetensi", conn, if_exists="append", index=False, chunksize=5000)
+                except Exception as ex_komp:
+                    print(f"Catatan simpan master kompetensi: {ex_komp}")
+
+            # 6. Master Pemetaan Paket
+            if "peta_paket" in dfs and dfs["peta_paket"] is not None and not dfs["peta_paket"].empty:
+                try:
+                    df_pkt = dfs["peta_paket"].copy()
+                    df_pkt.columns = [str(c).strip().lower() for c in df_pkt.columns]
+                    col_km = next((c for c in df_pkt.columns if "kode_mapel" in c or "kd_mapel" in c or "kodemapel" in c), None)
+                    col_kp = next((c for c in df_pkt.columns if "kode_paket" in c or "kodepaket" in c or "paket" in c), None)
+                    col_no = next((c for c in df_pkt.columns if "urut" in c or "no" in c), None)
+                    col_ns = next((c for c in df_pkt.columns if "namasoal" in c or "soal" in c or "butir" in c), None)
+                    col_zn = next((c for c in df_pkt.columns if "zona" in c), None)
+                    col_ss = next((c for c in df_pkt.columns if "sesi" in c), None)
+
+                    df_pkt_save = pd.DataFrame()
+                    df_pkt_save["kode_mapel"] = df_pkt[col_km].astype(str).str.strip().str.upper() if col_km else "-"
+                    df_pkt_save["kode_paket"] = df_pkt[col_kp].astype(str).str.strip().str.upper() if col_kp else "-"
+                    df_pkt_save["no_urut_soal"] = pd.to_numeric(df_pkt[col_no], errors="coerce").fillna(0).astype(int) if col_no else 0
+                    df_pkt_save["namasoal"] = df_pkt[col_ns].astype(str).str.strip() if col_ns else "-"
+                    df_pkt_save["zona"] = df_pkt[col_zn].astype(str).str.strip() if col_zn else "-"
+                    df_pkt_save["kode_sesi"] = df_pkt[col_ss].astype(str).str.strip() if col_ss else "-"
+                    df_pkt_save = df_pkt_save.drop_duplicates()
+
+                    try:
+                        curr_c = conn.execute(text("SELECT COUNT(*) FROM tb_master_peta_paket;")).scalar() or 0
+                    except Exception:
+                        curr_c = 0
+
+                    if curr_c != len(df_pkt_save):
+                        conn.execute(text("TRUNCATE TABLE tb_master_peta_paket;"))
+                        df_pkt_save.to_sql("tb_master_peta_paket", conn, if_exists="append", index=False, chunksize=25000)
+                except Exception as ex_pkt:
+                    print(f"Catatan simpan master peta paket: {ex_pkt}")
 
         return True, "Data master berhasil disimpan ke MySQL."
     except Exception as e:
@@ -709,6 +872,20 @@ def load_master_data_from_db() -> dict:
                     res["mapel"] = df_m
             except Exception:
                 pass
+
+            try:
+                df_kmp = pd.read_sql_query("SELECT * FROM tb_master_kompetensi", conn)
+                if not df_kmp.empty:
+                    res["kompetensi"] = df_kmp
+            except Exception:
+                pass
+
+            try:
+                df_pkt = pd.read_sql_query("SELECT * FROM tb_master_peta_paket", conn)
+                if not df_pkt.empty:
+                    res["peta_paket"] = df_pkt
+            except Exception:
+                pass
     except Exception:
         pass
     return res
@@ -724,6 +901,8 @@ def get_database_status() -> dict:
         "n_master_biodata": 0,
         "n_master_kunci": 0,
         "n_master_mapel": 0,
+        "n_master_kompetensi": 0,
+        "n_master_peta_paket": 0,
     }
     try:
         engine = get_db_connection()
@@ -769,6 +948,18 @@ def get_database_status() -> dict:
                 status["n_master_mapel"] = r5[0] or 0
             except Exception:
                 pass
+
+            try:
+                r6 = conn.execute(text("SELECT COUNT(*) FROM tb_master_kompetensi;")).fetchone()
+                status["n_master_kompetensi"] = r6[0] or 0
+            except Exception:
+                pass
+
+            try:
+                r7 = conn.execute(text("SELECT COUNT(*) FROM tb_master_peta_paket;")).fetchone()
+                status["n_master_peta_paket"] = r7[0] or 0
+            except Exception:
+                pass
     except Exception:
         pass
     return status
@@ -811,7 +1002,7 @@ def update_irt_model_in_db(
                 }).dropna().drop_duplicates("username")
 
                 with engine.begin() as conn:
-                    conn.execute(text(f"""
+                    conn.execute(text("""
                         CREATE TEMPORARY TABLE temp_irt_update (
                             username VARCHAR(100) PRIMARY KEY,
                             skor FLOAT

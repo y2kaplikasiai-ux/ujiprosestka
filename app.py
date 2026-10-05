@@ -27,6 +27,7 @@ from styles import load_custom_css
 from validators import validate_7_files, get_mapel_lookup_dict
 
 # Import modul UI dari folder views
+from sqlalchemy import text
 from views.tab_ctt import render_tab_ctt
 from views.tab_irt import render_tab_irt
 from views.tab_region import (
@@ -34,10 +35,10 @@ from views.tab_region import (
     resolve_province_info,
     extract_region_codes,
     get_kode_kabupaten_map,
-    KODE_PROVINSI_MAP,
 )
 from views.tab_school import render_tab_school
 from views.tab_scoring import render_tab_scoring
+from views.tab_student_scores import render_tab_student_scores
 from views.tab_validation import render_tab_validation
 
 # 1. Konfigurasi Halaman Streamlit
@@ -166,44 +167,46 @@ def render_login_gate():
     if st.session_state.get("authenticated", False):
         return True
 
-    col_pad1, col_box, col_pad2 = st.columns([1, 1.4, 1])
-    with col_box:
-        st.markdown(
-            """
-            <div style="background: #1e293b; border: 1px solid #334155; padding: 36px 32px; border-radius: 14px; margin-top: 50px; margin-bottom: 20px; box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5); text-align: center;">
-                <div style="font-size: 3.5rem; margin-bottom: 12px; line-height: 1;">🔐</div>
-                <h2 style="color: #f8fafc; margin: 0; font-size: 1.6rem; font-weight: 700; letter-spacing: -0.02em;">Dashboard Psikometri TKA</h2>
-                <p style="color: #94a3b8; font-size: 0.95rem; margin-top: 8px; margin-bottom: 0;">Silakan masukkan password untuk mengakses dashboard pengolahan.</p>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-        with st.form("login_form", clear_on_submit=False):
-            entered_pw = st.text_input(
-                "Password Akses:",
-                type="password",
-                placeholder="Masukkan password...",
-                help="Silakan masukkan password untuk membuka akses dashboard.",
+    login_slot = st.empty()
+    with login_slot.container():
+        col_pad1, col_box, col_pad2 = st.columns([1, 1.4, 1])
+        with col_box:
+            st.markdown(
+                """
+                <div style="background: #1e293b; border: 1px solid #334155; padding: 36px 32px; border-radius: 14px; margin-top: 50px; margin-bottom: 20px; box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5); text-align: center;">
+                    <div style="font-size: 3.5rem; margin-bottom: 12px; line-height: 1;">🔐</div>
+                    <h2 style="color: #f8fafc; margin: 0; font-size: 1.6rem; font-weight: 700; letter-spacing: -0.02em;">Dashboard Psikometri TKA</h2>
+                    <p style="color: #94a3b8; font-size: 0.95rem; margin-top: 8px; margin-bottom: 0;">Silakan masukkan password untuk mengakses dashboard pengolahan.</p>
+                </div>
+                """,
+                unsafe_allow_html=True,
             )
-            submit_btn = st.form_submit_button("🚀 Masuk ke Dashboard", use_container_width=True)
 
-            if submit_btn:
-                if entered_pw == APP_PASSWORD:
-                    st.session_state["authenticated"] = True
-                    st.success("✅ Password benar! Memuat dashboard...")
-                    st.rerun()
-                elif not entered_pw.strip():
-                    st.warning("⚠️ Mohon masukkan password terlebih dahulu.")
-                else:
-                    st.error("❌ Password salah. Silakan coba kembali.")
+            with st.form("login_form", clear_on_submit=False):
+                entered_pw = st.text_input(
+                    "Password Akses:",
+                    type="password",
+                    placeholder="Masukkan password...",
+                    help="Silakan masukkan password untuk membuka akses dashboard.",
+                )
+                submit_btn = st.form_submit_button("🚀 Masuk ke Dashboard", use_container_width=True)
 
-        st.markdown(
-            '<div style="text-align: center; color: #64748b; font-size: 0.82rem; margin-top: 14px;">'
-            '🔒 Akses terbatas untuk staf dan pengolah data resmi Puspendik/Pusmendik.'
-            '</div>',
-            unsafe_allow_html=True,
-        )
+                if submit_btn:
+                    if entered_pw == APP_PASSWORD:
+                        st.session_state["authenticated"] = True
+                        login_slot.empty()
+                        st.rerun()
+                    elif not entered_pw.strip():
+                        st.warning("⚠️ Mohon masukkan password terlebih dahulu.")
+                    else:
+                        st.error("❌ Password salah. Silakan coba kembali.")
+
+            st.markdown(
+                '<div style="text-align: center; color: #64748b; font-size: 0.82rem; margin-top: 14px;">'
+                '🔒 Akses terbatas untuk staf dan pengolah data resmi Puspendik/Pusmendik.'
+                '</div>',
+                unsafe_allow_html=True,
+            )
 
     return False
 
@@ -212,24 +215,6 @@ def render_login_gate():
 if not render_login_gate():
     st.stop()
 
-
-# 3. Header Utama Aplikasi
-col_hdr_title, col_hdr_logout = st.columns([8.2, 1.8])
-with col_hdr_title:
-    st.markdown(
-        '<div class="main-header">📊 Dashboard Pengolahan & Analisis Psikometri TKA (v.3)</div>',
-        unsafe_allow_html=True,
-    )
-    st.markdown(
-        '<div class="sub-header">Sistem Pemrosesan Data Respon, CTT (Klasik), dan IRT (Rasch, 1PL, 2PL, 3PL)</div>',
-        unsafe_allow_html=True,
-    )
-with col_hdr_logout:
-    st.write("")
-    st.write("")
-    if st.button("🔒 Logout", key="btn_auth_logout", use_container_width=True, help="Keluar dari sesi dashboard"):
-        st.session_state["authenticated"] = False
-        st.rerun()
 
 # Inisialisasi Session State
 if "data_processed" not in st.session_state:
@@ -245,13 +230,39 @@ CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data_cache
 
 
 def save_local_cache(df_peserta=None, df_soal=None, df_summary=None, df_sekolah=None):
-    """Menyimpan data hasil analisis ke disk lokal dalam format Parquet sebagai cadangan."""
+    """Menyimpan data hasil analisis ke disk lokal dalam format Parquet secara inkremental per mapel."""
     try:
         os.makedirs(CACHE_DIR, exist_ok=True)
         if df_peserta is not None and not df_peserta.empty:
-            df_peserta.to_parquet(os.path.join(CACHE_DIR, "tb_peserta_skor.parquet"), index=False)
+            p_path = os.path.join(CACHE_DIR, "tb_peserta_skor.parquet")
+            df_to_save = df_peserta.copy()
+            if os.path.exists(p_path) and "mapel" in df_to_save.columns:
+                try:
+                    df_old = pd.read_parquet(p_path)
+                    new_mapels = set(df_to_save["mapel"].dropna().astype(str).str.strip().str.upper())
+                    if "mapel" in df_old.columns:
+                        old_mapels = df_old["mapel"].astype(str).str.strip().str.upper()
+                        df_old = df_old[~old_mapels.isin(new_mapels)]
+                    df_to_save = pd.concat([df_old, df_to_save], ignore_index=True)
+                except Exception:
+                    pass
+            df_to_save.to_parquet(p_path, index=False)
+
         if df_soal is not None and not df_soal.empty:
-            df_soal.to_parquet(os.path.join(CACHE_DIR, "tb_soal_parameter.parquet"), index=False)
+            p_soal_path = os.path.join(CACHE_DIR, "tb_soal_parameter.parquet")
+            df_soal_to_save = df_soal.copy()
+            if os.path.exists(p_soal_path) and "mapel" in df_soal_to_save.columns:
+                try:
+                    df_soal_old = pd.read_parquet(p_soal_path)
+                    new_soal_mapels = set(df_soal_to_save["mapel"].dropna().astype(str).str.strip().str.upper())
+                    if "mapel" in df_soal_old.columns:
+                        old_s_mapels = df_soal_old["mapel"].astype(str).str.strip().str.upper()
+                        df_soal_old = df_soal_old[~old_s_mapels.isin(new_soal_mapels)]
+                    df_soal_to_save = pd.concat([df_soal_old, df_soal_to_save], ignore_index=True)
+                except Exception:
+                    pass
+            df_soal_to_save.to_parquet(p_soal_path, index=False)
+
         if df_summary is not None and not df_summary.empty:
             df_summary.to_parquet(os.path.join(CACHE_DIR, "tb_model_summary.parquet"), index=False)
         if df_sekolah is not None and not df_sekolah.empty:
@@ -291,10 +302,61 @@ def load_data_from_db():
     df_sekolah = None
     loaded_source = None
 
+    # Muat kamus mapel dari master jika ada
+    mpl_lookup = st.session_state.get("mapel_dict")
+
     # 1. Coba baca dari MySQL Server
     try:
         engine = get_db_connection()
         if engine is not None:
+            # Baca tb_master_mapel terlebih dahulu
+            try:
+                df_m_master = pd.read_sql("SELECT * FROM tb_master_mapel", engine)
+                if not df_m_master.empty:
+                    st.session_state["df_mapel"] = df_m_master
+                    mpl_lookup = get_mapel_lookup_dict(df_m_master)
+                    st.session_state["mapel_dict"] = mpl_lookup
+            except Exception:
+                pass
+
+            if not mpl_lookup:
+                mpl_lookup = get_mapel_lookup_dict(None)
+                st.session_state["mapel_dict"] = mpl_lookup
+
+            # Sinkronisasi nama mapel di MySQL jika masih berupa kode seperti ABIOP atau berakhiran Pilihan
+            try:
+                if mpl_lookup:
+                    with engine.begin() as conn:
+                        for k_c, n_c in mpl_lookup.items():
+                            if k_c and n_c and str(k_c).strip().upper() != str(n_c).strip().upper():
+                                conn.execute(
+                                    text("UPDATE tb_peserta_skor SET mapel = :n WHERE UPPER(TRIM(mapel)) = :k;"),
+                                    {"n": str(n_c).strip(), "k": str(k_c).strip().upper()},
+                                )
+                                conn.execute(
+                                    text("UPDATE tb_soal_parameter SET mapel = :n WHERE UPPER(TRIM(mapel)) = :k;"),
+                                    {"n": str(n_c).strip(), "k": str(k_c).strip().upper()},
+                                )
+                        # Penyelarasan agar nama mapel persis sesuai tabel master mapel resmi (tanpa kata 'Pilihan')
+                        conn.execute(text("UPDATE tb_peserta_skor SET mapel = 'Biologi' WHERE UPPER(TRIM(mapel)) IN ('ABIOP', 'BIOLOGI PILIHAN');"))
+                        conn.execute(text("UPDATE tb_soal_parameter SET mapel = 'Biologi' WHERE UPPER(TRIM(mapel)) IN ('ABIOP', 'BIOLOGI PILIHAN');"))
+                        conn.execute(text("UPDATE tb_peserta_skor SET mapel = 'Kimia' WHERE UPPER(TRIM(mapel)) IN ('AKIMP', 'KIMIA PILIHAN');"))
+                        conn.execute(text("UPDATE tb_soal_parameter SET mapel = 'Kimia' WHERE UPPER(TRIM(mapel)) IN ('AKIMP', 'KIMIA PILIHAN');"))
+                        conn.execute(text("UPDATE tb_peserta_skor SET mapel = 'Fisika' WHERE UPPER(TRIM(mapel)) IN ('AFISP', 'FISIKA PILIHAN');"))
+                        conn.execute(text("UPDATE tb_soal_parameter SET mapel = 'Fisika' WHERE UPPER(TRIM(mapel)) IN ('AFISP', 'FISIKA PILIHAN');"))
+                        conn.execute(text("UPDATE tb_peserta_skor SET mapel = 'Ekonomi' WHERE UPPER(TRIM(mapel)) IN ('AEKOP', 'EKONOMI PILIHAN');"))
+                        conn.execute(text("UPDATE tb_soal_parameter SET mapel = 'Ekonomi' WHERE UPPER(TRIM(mapel)) IN ('AEKOP', 'EKONOMI PILIHAN');"))
+                        conn.execute(text("UPDATE tb_peserta_skor SET mapel = 'Geografi' WHERE UPPER(TRIM(mapel)) IN ('AGEOP', 'GEOGRAFI PILIHAN');"))
+                        conn.execute(text("UPDATE tb_soal_parameter SET mapel = 'Geografi' WHERE UPPER(TRIM(mapel)) IN ('AGEOP', 'GEOGRAFI PILIHAN');"))
+                        conn.execute(text("UPDATE tb_peserta_skor SET mapel = 'Sosiologi' WHERE UPPER(TRIM(mapel)) IN ('ASOSP', 'SOSIOLOGI PILIHAN');"))
+                        conn.execute(text("UPDATE tb_soal_parameter SET mapel = 'Sosiologi' WHERE UPPER(TRIM(mapel)) IN ('ASOSP', 'SOSIOLOGI PILIHAN');"))
+                        conn.execute(text("UPDATE tb_peserta_skor SET mapel = 'Sejarah' WHERE UPPER(TRIM(mapel)) IN ('ASEJP', 'SEJARAH PILIHAN');"))
+                        conn.execute(text("UPDATE tb_soal_parameter SET mapel = 'Sejarah' WHERE UPPER(TRIM(mapel)) IN ('ASEJP', 'SEJARAH PILIHAN');"))
+                        conn.execute(text("UPDATE tb_peserta_skor SET mapel = 'Antropologi' WHERE UPPER(TRIM(mapel)) IN ('AANTP', 'ANTROP', 'ANTROPOLOGI PILIHAN');"))
+                        conn.execute(text("UPDATE tb_soal_parameter SET mapel = 'Antropologi' WHERE UPPER(TRIM(mapel)) IN ('AANTP', 'ANTROP', 'ANTROPOLOGI PILIHAN');"))
+            except Exception:
+                pass
+
             df_sum_test = pd.read_sql("SELECT * FROM tb_model_summary", engine)
             if not df_sum_test.empty:
                 df_summary = df_sum_test
@@ -319,6 +381,20 @@ def load_data_from_db():
         return False
 
     try:
+        if not mpl_lookup:
+            mpl_lookup = st.session_state.get("mapel_dict") or get_mapel_lookup_dict(None)
+            st.session_state["mapel_dict"] = mpl_lookup
+
+        # Normalisasi nama mapel pada df_peserta dan df_soal
+        if df_peserta is not None and "mapel" in df_peserta.columns and mpl_lookup:
+            df_peserta["mapel"] = df_peserta["mapel"].map(
+                lambda x: mpl_lookup.get(str(x).strip().upper(), mpl_lookup.get(str(x).strip(), str(x).strip()))
+            )
+        if df_soal is not None and "mapel" in df_soal.columns and mpl_lookup:
+            df_soal["mapel"] = df_soal["mapel"].map(
+                lambda x: mpl_lookup.get(str(x).strip().upper(), mpl_lookup.get(str(x).strip(), str(x).strip()))
+            )
+
         # Konversi kolom numerik soal
         for num_col in [
             "tingkat_kesukaran_ctt",
@@ -362,42 +438,50 @@ def load_data_from_db():
             else 0.0
         )
 
-        # Standarisasi dan perbaikan otomatis data provinsi dan kabupaten jika masih berupa kode atau null
-        col_u_pes = next(
-            (c for c in df_peserta.columns if str(c).lower().strip() in ["username", "user_id", "id_peserta"]),
-            df_peserta.columns[0]
-        )
-        prov_norm = []
-        kd_norm = []
-        kab_norm = []
-        kd_ray_norm = []
-        p_series = df_peserta["nama_provinsi"] if "nama_provinsi" in df_peserta.columns else pd.Series([None] * len(df_peserta))
-        k_series = df_peserta["kode_provinsi"] if "kode_provinsi" in df_peserta.columns else pd.Series([None] * len(df_peserta))
-        kb_series = df_peserta["nama_kabupaten"] if "nama_kabupaten" in df_peserta.columns else pd.Series([None] * len(df_peserta))
-        u_series = df_peserta[col_u_pes]
+        # Standarisasi data provinsi dan kabupaten (optimasi: hanya jalankan loop jika data belum terisi)
+        need_region_norm = True
+        if "nama_provinsi" in df_peserta.columns and "nama_kabupaten" in df_peserta.columns:
+            non_empty_p = df_peserta["nama_provinsi"].dropna()
+            if len(non_empty_p) > 0 and not non_empty_p.iloc[:100].astype(str).str.upper().isin(["", "-", "NAN", "NONE", "NULL", "TIDAK TERDEFINISI"]).all():
+                need_region_norm = False
 
-        kab_map = get_kode_kabupaten_map()
-        for p_v, k_v, u_v, kb_v in zip(p_series, k_series, u_series, kb_series):
-            c_p, n_p = resolve_province_info(p_v, k_v, u_v)
-            kd_norm.append(c_p)
-            prov_norm.append(n_p)
-            _, kd_ray, _ = extract_region_codes(u_v)
-            kd_ray_norm.append(kd_ray)
-            kb_str = str(kb_v).strip() if pd.notna(kb_v) else ""
-            if kb_str and kb_str.upper() not in ["", "-", "NAN", "NONE", "NULL", "TIDAK TERDEFINISI"]:
-                kab_norm.append(kb_str)
-            elif kd_ray and kd_ray in kab_map:
-                kab_norm.append(kab_map[kd_ray])
-            elif kd_ray:
-                kab_norm.append(f"KAB/KOTA {kd_ray}")
-            else:
-                kab_norm.append("TIDAK TERDEFINISI")
+        if need_region_norm:
+            col_u_pes = next(
+                (c for c in df_peserta.columns if str(c).lower().strip() in ["username", "user_id", "id_peserta"]),
+                df_peserta.columns[0]
+            )
+            prov_norm = []
+            kd_norm = []
+            kab_norm = []
+            kd_ray_norm = []
+            p_series = df_peserta["nama_provinsi"] if "nama_provinsi" in df_peserta.columns else pd.Series([None] * len(df_peserta))
+            k_series = df_peserta["kode_provinsi"] if "kode_provinsi" in df_peserta.columns else pd.Series([None] * len(df_peserta))
+            kb_series = df_peserta["nama_kabupaten"] if "nama_kabupaten" in df_peserta.columns else pd.Series([None] * len(df_peserta))
+            u_series = df_peserta[col_u_pes]
 
-        df_peserta["nama_provinsi"] = prov_norm
-        df_peserta["kode_provinsi"] = kd_norm
-        df_peserta["kode_kabupaten"] = kd_ray_norm
-        df_peserta["nama_kabupaten"] = kab_norm
+            kab_map = get_kode_kabupaten_map()
+            for p_v, k_v, u_v, kb_v in zip(p_series, k_series, u_series, kb_series):
+                c_p, n_p = resolve_province_info(p_v, k_v, u_v)
+                kd_norm.append(c_p)
+                prov_norm.append(n_p)
+                _, kd_ray, _ = extract_region_codes(u_v)
+                kd_ray_norm.append(kd_ray)
+                kb_str = str(kb_v).strip() if pd.notna(kb_v) else ""
+                if kb_str and kb_str.upper() not in ["", "-", "NAN", "NONE", "NULL", "TIDAK TERDEFINISI"]:
+                    kab_norm.append(kb_str)
+                elif kd_ray and kd_ray in kab_map:
+                    kab_norm.append(kab_map[kd_ray])
+                elif kd_ray:
+                    kab_norm.append(f"KAB/KOTA {kd_ray}")
+                else:
+                    kab_norm.append("TIDAK TERDEFINISI")
 
+            df_peserta["nama_provinsi"] = prov_norm
+            df_peserta["kode_provinsi"] = kd_norm
+            df_peserta["kode_kabupaten"] = kd_ray_norm
+            df_peserta["nama_kabupaten"] = kab_norm
+
+        st.session_state["df_peserta_skor"] = df_peserta
         st.session_state["df_matrix"] = df_peserta
         st.session_state["df_matrix_school"] = df_peserta
         if df_sekolah is not None and not df_sekolah.empty:
@@ -422,6 +506,8 @@ def load_data_from_db():
         }
 
         irt_dict = {}
+        m_scale_def = float(st.session_state.get("cfg_mean_scale", 500.0))
+        s_scale_def = float(st.session_state.get("cfg_sd_scale", 100.0))
         for m in ["rasch", "1pl", "2pl", "3pl"]:
             row = df_summary[df_summary["metode_model"].str.lower() == m]
             fit_stat = row.to_dict(orient="records")[0] if not row.empty else {}
@@ -436,12 +522,12 @@ def load_data_from_db():
                 df_person_m["Nilai_Scaled"] = pd.to_numeric(
                     df_person_m[col_target], errors="coerce"
                 )
-                df_person_m["Theta"] = df_person_m["Nilai_Scaled"]
+                df_person_m["Theta"] = np.round((df_person_m["Nilai_Scaled"] - m_scale_def) / max(s_scale_def, 1e-5), 3)
             elif "skor_konversi_ctt" in df_person_m.columns:
                 df_person_m["Nilai_Scaled"] = pd.to_numeric(
                     df_person_m["skor_konversi_ctt"], errors="coerce"
                 )
-                df_person_m["Theta"] = df_person_m["Nilai_Scaled"]
+                df_person_m["Theta"] = np.round((df_person_m["Nilai_Scaled"] - m_scale_def) / max(s_scale_def, 1e-5), 3)
 
             # Salin parameter butir spesifik model
             df_soal_m = df_soal.copy() if df_soal is not None else pd.DataFrame()
@@ -474,8 +560,24 @@ def load_data_from_db():
         return False
 
 
-if not st.session_state.get("data_processed", False):
-    load_data_from_db()
+# 3. Header Utama Aplikasi
+col_hdr_title, col_hdr_logout = st.columns([8.6, 1.4])
+with col_hdr_title:
+    st.markdown(
+        '<div class="main-header">📊 Dashboard Pengolahan & Analisis Psikometri TKA (v.4)</div>',
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        '<div class="sub-header">Sistem Pemrosesan Data Respon, CTT (Klasik), dan IRT (Rasch, 1PL, 2PL, 3PL)</div>',
+        unsafe_allow_html=True,
+    )
+with col_hdr_logout:
+    st.write("")
+    st.write("")
+    if st.button("🔒 Logout", key="btn_auth_logout", use_container_width=True, help="Keluar dari sesi dashboard"):
+        st.session_state["authenticated"] = False
+        st.session_state["data_processed"] = False
+        st.rerun()
 
 if not st.session_state.get("data_processed", False):
     inject_header_timer(running=False, total_seconds=0)
@@ -695,22 +797,29 @@ for key, files_list in raw_file_collections.items():
                 else:
                     df_merged = df_merged.drop_duplicates()
             
+            df_merged = df_merged.reset_index(drop=True)
             df_merged.name = f"Gabungan_{key.upper()}_({len(df_list)}_files)"
             uploaded_files[key] = df_merged
         else:
             uploaded_files[key] = None
 
-# Jika ada tabel master mapel, selaraskan nama mapel pada respon dan kunci
+# Selaraskan nama mapel pada respon dan kunci menggunakan tabel master mapel atau kamus kurikulum resmi
+mapel_dict_lookup = None
 if uploaded_files.get("mapel") is not None and not uploaded_files["mapel"].empty:
     mapel_dict_lookup = get_mapel_lookup_dict(uploaded_files["mapel"])
-    if mapel_dict_lookup:
-        st.session_state["mapel_dict"] = mapel_dict_lookup
-        st.session_state["df_mapel"] = uploaded_files["mapel"]
-        for t_k in ["respon", "kunci"]:
-            if uploaded_files.get(t_k) is not None and "mapel" in uploaded_files[t_k].columns:
-                uploaded_files[t_k]["mapel"] = uploaded_files[t_k]["mapel"].map(
-                    lambda x: mapel_dict_lookup.get(str(x).strip().upper(), mapel_dict_lookup.get(str(x).strip(), str(x).strip()))
-                )
+    st.session_state["mapel_dict"] = mapel_dict_lookup
+    st.session_state["df_mapel"] = uploaded_files["mapel"]
+
+if not mapel_dict_lookup:
+    mapel_dict_lookup = st.session_state.get("mapel_dict") or get_mapel_lookup_dict(None)
+    st.session_state["mapel_dict"] = mapel_dict_lookup
+
+if mapel_dict_lookup:
+    for t_k in ["respon", "kunci"]:
+        if uploaded_files.get(t_k) is not None and "mapel" in uploaded_files[t_k].columns:
+            uploaded_files[t_k]["mapel"] = uploaded_files[t_k]["mapel"].map(
+                lambda x: mapel_dict_lookup.get(str(x).strip().upper(), mapel_dict_lookup.get(str(x).strip(), str(x).strip()))
+            )
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Status Deteksi Berkas:")
@@ -719,17 +828,16 @@ st.sidebar.markdown("#### Status Deteksi Berkas:")
 db_stat = get_database_status()
 
 configs_info = [
-    ("respon", "1. Lembar Respon", True),
-    ("kunci", "2. Kunci Jawaban", True),
-    ("biodata", "3. Biodata Peserta", False),
-    ("sekolah", "4. Master Sekolah", False),
-    ("mapel", "5. Mata Pelajaran", False),
-    ("kompetensi", "6. Kisi-Kisi", False),
-    ("peta_paket", "7. Pemetaan Paket", False),
+    ("respon", "1. Data Respon"),
+    ("kunci", "2. Kunci Jawaban"),
+    ("biodata", "3. Biodata Peserta"),
+    ("sekolah", "4. Master Sekolah"),
+    ("mapel", "5. Mata Pelajaran"),
+    ("kompetensi", "6. Kisi-Kisi"),
+    ("peta_paket", "7. Pemetaan Paket"),
 ]
 
-for key, label, req in configs_info:
-    req_mark = " <span style='color:red;'>*</span>" if req else ""
+for key, label in configs_info:
     obj = uploaded_files[key]
     count_files = len(raw_file_collections[key])
 
@@ -753,19 +861,37 @@ for key, label, req in configs_info:
         elif key == "mapel" and db_stat.get("n_master_mapel", 0) > 0:
             has_in_db = True
             db_desc = f"Tersimpan di Database ({db_stat['n_master_mapel']:,} mapel)".replace(",", ".")
+        elif key == "kompetensi" and db_stat.get("n_master_kompetensi", 0) > 0:
+            has_in_db = True
+            db_desc = f"Tersimpan di Database ({db_stat['n_master_kompetensi']:,} butir)".replace(",", ".")
+        elif key == "peta_paket" and db_stat.get("n_master_peta_paket", 0) > 0:
+            has_in_db = True
+            db_desc = f"Tersimpan di Database ({db_stat['n_master_peta_paket']:,} data)".replace(",", ".")
 
         if has_in_db:
             st.sidebar.markdown(f"💾 **{label}**: <span style='color:#38bdf8;'>*{db_desc}*</span>", unsafe_allow_html=True)
         else:
             st.sidebar.markdown(
-                f"❌ <span style='color:gray;'>{label}{req_mark}: Belum terdeteksi</span>",
+                f"❌ <span style='color:gray;'>{label}: Belum terdeteksi</span>",
                 unsafe_allow_html=True,
             )
 
 st.sidebar.markdown("---")
 btn_process = st.sidebar.button(
-    "🚀 Proses Data", type="primary", use_container_width=True
+    "🚀 Proses Data", type="primary", use_container_width=True, help="Mulai validasi dan pemrosesan data respon"
 )
+btn_load_db = st.sidebar.button(
+    "📥 Load Data dari DB", use_container_width=True, help="Muat data dan hasil analisis yang tersimpan di database MySQL"
+)
+
+if btn_load_db:
+    with st.spinner("⏳ Menghubungkan ke MySQL & memuat data psikometri..."):
+        ok_load = load_data_from_db()
+        if ok_load:
+            st.toast("✅ Data berhasil dimuat dari database MySQL!")
+            st.rerun()
+        else:
+            st.sidebar.warning("⚠️ Tidak ada data pengolahan di database atau belum tersimpan.")
 
 # Fitur Reset Database (2 Opsi: Hapus Respon Saja atau Reset Total)
 with st.sidebar.expander("🗑️ Kelola & Reset Database", expanded=False):
@@ -844,17 +970,7 @@ def filter_kunci_by_respon_kode(df_respon, df_kunci):
 
 # 5. Logika Eksekusi Tombol Proses Data
 if btn_process:
-    # Sinkronisasi Master Data: Ambil dari Database jika tidak diunggah pengguna
-    db_masters = load_master_data_from_db()
-    for m_key in ["kunci", "biodata", "sekolah", "mapel"]:
-        if uploaded_files.get(m_key) is None or uploaded_files[m_key].empty:
-            if m_key in db_masters and db_masters[m_key] is not None and not db_masters[m_key].empty:
-                uploaded_files[m_key] = db_masters[m_key]
-
-    # Simpan berkas master yang baru diunggah ke DB untuk penggunaan berikutnya
-    save_master_data_to_db(uploaded_files)
-
-    has_kunci_ready = (uploaded_files.get("kunci") is not None and not uploaded_files["kunci"].empty)
+    has_kunci_ready = (uploaded_files.get("kunci") is not None and not uploaded_files["kunci"].empty) or (db_stat.get("n_master_kunci", 0) > 0)
     has_respon_ready = (uploaded_files.get("respon") is not None and not uploaded_files["respon"].empty)
 
     if not (has_respon_ready and has_kunci_ready):
@@ -882,7 +998,7 @@ if btn_process:
             t_start = time.time()
 
             step_names = [
-                "Memvalidasi struktur & format berkas",
+                "Memvalidasi struktur & kelengkapan berkas",
                 "Menjalankan Scoring Engine & Pemetaan Skor",
                 "Menganalisis Psikometri Klasik (CTT)",
                 "Menganalisis Model IRT (Rasch, 1PL, 2PL, 3PL) Seluruh Peserta",
@@ -932,10 +1048,17 @@ if btn_process:
 
             render_step_logs()
 
-            # --- LANGKAH 1: VALIDASI ---
+            # --- LANGKAH 1: VALIDASI & SINKRONISASI DATA MASTER ---
             update_step(0, "running")
             t1_start = time.time()
             progress_bar.progress(10)
+
+            # Sinkronisasi Master Data: Ambil dari Database jika tidak diunggah pengguna pada sesi ini
+            db_masters = load_master_data_from_db()
+            for m_key in ["kunci", "biodata", "sekolah", "mapel", "kompetensi", "peta_paket"]:
+                if uploaded_files.get(m_key) is None or uploaded_files[m_key].empty:
+                    if m_key in db_masters and db_masters[m_key] is not None and not db_masters[m_key].empty:
+                        uploaded_files[m_key] = db_masters[m_key]
 
             val_result = validate_7_files(uploaded_files)
             st.session_state["val_result"] = val_result
@@ -1027,7 +1150,7 @@ if btn_process:
                                     df_i["mapel"] = mpl_name
                                     all_items.append(df_i)
                                 combined_fit[mpl_name] = res_m.get("fit_stats", {})
-                            except Exception as ex_m:
+                            except Exception:
                                 pass
                         
                         df_p_mod = pd.concat(all_p, ignore_index=True) if all_p else pd.DataFrame()
@@ -1092,6 +1215,9 @@ if btn_process:
                         )
                         df_bio["_u_clean"] = df_bio[col_u_bio].astype(str).str.strip().str.lower()
                         
+                        col_nisn_bio = next((c for c in df_bio.columns if "nisn" in c), None)
+                        col_nama_bio = next((c for c in df_bio.columns if "nama" in c and "sekolah" not in c and "kabupaten" not in c and "provinsi" not in c), None)
+                        col_jk_bio = next((c for c in df_bio.columns if any(kw in c for kw in ["jenis_kelamin", "jeniskelamin", "jk", "gender", "sex", "kelamin", "l/p", "lp"])), None)
                         col_sek_bio = next((c for c in df_bio.columns if "sekolah" in c), None)
                         col_kab_bio = next((c for c in df_bio.columns if "kabupaten" in c or "kota" in c), None)
                         col_prov_bio = next((c for c in df_bio.columns if "provinsi" in c or "propinsi" in c or "prov" in c), None)
@@ -1099,6 +1225,15 @@ if btn_process:
 
                         bio_keep = ["_u_clean"]
                         bio_ren = {}
+                        if col_nisn_bio:
+                            bio_keep.append(col_nisn_bio)
+                            bio_ren[col_nisn_bio] = "nisn"
+                        if col_nama_bio:
+                            bio_keep.append(col_nama_bio)
+                            bio_ren[col_nama_bio] = "nama"
+                        if col_jk_bio:
+                            bio_keep.append(col_jk_bio)
+                            bio_ren[col_jk_bio] = "jenis_kelamin"
                         if col_sek_bio:
                             bio_keep.append(col_sek_bio)
                             bio_ren[col_sek_bio] = "nama_sekolah_bio"
@@ -1320,6 +1455,9 @@ if btn_process:
 
                     usr_col_src = "username" if "username" in df_base.columns else df_base.columns[0]
                     df_peserta_save["username"] = df_base[usr_col_src].astype(str).str.strip()
+                    df_peserta_save["nisn"] = df_base["nisn"].astype(str).str.strip() if "nisn" in df_base.columns else "-"
+                    df_peserta_save["nama"] = df_base["nama"].astype(str).str.strip() if "nama" in df_base.columns else "-"
+                    df_peserta_save["jenis_kelamin"] = df_base["jenis_kelamin"].astype(str).str.strip() if "jenis_kelamin" in df_base.columns else "-"
                     if "mapel" in df_base.columns and mpl_lookup_active:
                         df_peserta_save["mapel"] = df_base["mapel"].fillna("UMUM").map(
                             lambda x: mpl_lookup_active.get(str(x).strip().upper(), mpl_lookup_active.get(str(x).strip(), str(x).strip()))
@@ -1635,6 +1773,16 @@ if btn_process:
                         st.session_state["db_save_status"] = "✅ Berhasil tersimpan ke MySQL Server & Cadangan Lokal"
                         st.cache_data.clear()
 
+                    # Simpan juga berkas master (sekolah, biodata, kunci, mapel, dsb) jika diunggah
+                    try:
+                        save_master_data_to_db(uploaded_files)
+                    except Exception as ex_m:
+                        print(f"Catatan simpan master: {ex_m}")
+
+                    # Muat kembali seluruh data kumulatif dari database MySQL / cache lokal
+                    # agar seluruh tab (Scoring, CTT, IRT, Wilayah, Sekolah) langsung menyajikan semua mata pelajaran!
+                    load_data_from_db()
+
                 except Exception as ex_mysql:
                     st.session_state["db_save_status"] = f"⚠️ Kendala DB: {ex_mysql} (Data tersimpan di cadangan lokal)"
 
@@ -1688,10 +1836,12 @@ if btn_process:
                 st.session_state["data_processed"] = False
 
 # 6. Tampilan Utama Dashboard
-if not st.session_state.get("data_processed", False):
+if not st.session_state.get("data_processed", False) and not btn_process:
     st.info(
-        "👋 **Petunjuk:** Unggah berkas sekaligus (CSV/XLSX/ZIP) pada wadah unggah"
-        " di sebelah kiri, sesuaikan skala skor jika perlu, lalu klik tombol **🚀 Proses Data**."
+        "👋 **Petunjuk Alur Pengolahan:**\n\n"
+        "1. **Buka Hasil Tersimpan:** Klik tombol **📥 Load Data dari DB** pada panel menu kiri untuk membuka data & hasil analisis dari MySQL.\n"
+        "2. **Pengolahan Berkas Baru:** Unggah berkas respon & master pada panel menu kiri, lalu klik **🚀 Proses Data**.\n"
+        "3. **Reset Database:** Jika ingin membersihkan data lama sebelum mengolah baru, gunakan menu **🗑️ Kelola & Reset Database** di panel kiri."
     )
 
     if st.session_state.get("val_result"):
@@ -1706,7 +1856,7 @@ else:
     ctt_res = st.session_state.get("ctt_res")
     df_matrix_school = st.session_state.get("df_matrix_school", pd.DataFrame())
 
-    tab_val, tab_scoring, tab_ctt, tab_irt, tab_school, tab_region = st.tabs(
+    tab_val, tab_scoring, tab_ctt, tab_irt, tab_school, tab_region, tab_student_scores = st.tabs(
         [
             "📋 1. Validasi Data",
             "💯 2. Scoring Engine",
@@ -1714,6 +1864,7 @@ else:
             "🎯 4. Analisis IRT",
             "🏫 5. Analisis Per Sekolah",
             "🗺️ 6. Analisis Wilayah",
+            "👨‍🎓 7. Rekap Nilai Siswa",
         ]
     )
 
@@ -1756,3 +1907,9 @@ else:
             render_tab_region(df_matrix_school if not df_matrix_school.empty else df_matrix, dfs)
         except Exception as e_reg:
             st.error(f"⚠️ Terjadi kendala saat menampilkan Tab Analisis Wilayah: {e_reg}")
+
+    with tab_student_scores:
+        try:
+            render_tab_student_scores(df_matrix_school if not df_matrix_school.empty else df_matrix, dfs)
+        except Exception as e_stu:
+            st.error(f"⚠️ Terjadi kendala saat menampilkan Tab Rekap Nilai Siswa: {e_stu}")
