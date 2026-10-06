@@ -556,6 +556,26 @@ def load_data_from_db():
         st.session_state["data_processed"] = True
         st.session_state["loaded_source"] = loaded_source
 
+        # Muat / siapkan cache analitik precomputed untuk seluruh tab agar UI instan
+        from analytics_cache import load_analytics_cache, precompute_and_save_all
+        cached_analytics = load_analytics_cache()
+        if not cached_analytics or "df_school_composite" not in cached_analytics:
+            scale_cfg_active = {
+                "min": float(st.session_state.get("cfg_min_scale", 200.0)),
+                "max": float(st.session_state.get("cfg_max_scale", 800.0)),
+                "mean": m_scale_def,
+                "sd": s_scale_def,
+            }
+            precompute_and_save_all(
+                df_peserta=df_peserta,
+                ctt_res=st.session_state.get("ctt_res"),
+                scale_config=scale_cfg_active,
+                mapel_lookup=mpl_lookup,
+            )
+        else:
+            for k_an, v_an in cached_analytics.items():
+                st.session_state[k_an] = v_an
+
         # Set config key agar tidak memicu reset cache tab_irt
         min_s = float(st.session_state.get("cfg_min_scale", 200.0))
         max_s = float(st.session_state.get("cfg_max_scale", 800.0))
@@ -1794,6 +1814,18 @@ if btn_process:
                         save_master_data_to_db(uploaded_files)
                     except Exception as ex_m:
                         print(f"Catatan simpan master: {ex_m}")
+
+                    # Pra-komputasi analitik lengkap (CTT, IRT, Sekolah, Wilayah, Geo Hierarchy) dan simpan ke disk cache
+                    try:
+                        from analytics_cache import precompute_and_save_all
+                        precompute_and_save_all(
+                            df_peserta=df_peserta_save,
+                            ctt_res=ctt_res,
+                            scale_config=scale_config,
+                            mapel_lookup=mpl_lookup_active,
+                        )
+                    except Exception as ex_an:
+                        print(f"Catatan pra-komputasi analitik: {ex_an}")
 
                     # Muat kembali seluruh data kumulatif dari database MySQL / cache lokal
                     # agar seluruh tab (Scoring, CTT, IRT, Wilayah, Sekolah) langsung menyajikan semua mata pelajaran!

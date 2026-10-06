@@ -20,21 +20,20 @@ def load_scoring_from_mysql():
 
 def render_tab_scoring(df_matrix, dfs=None):
     # Prioritaskan data di memory session agar proses instan tanpa query ulang MySQL
-    df_target = None
     df_sess = st.session_state.get("df_peserta_skor")
     if df_sess is not None and not df_sess.empty:
-        df_target = df_sess.copy()
+        df_target = df_sess
         is_mysql = False
     elif df_matrix is not None and not df_matrix.empty and "skor_konversi_ctt" in df_matrix.columns:
-        df_target = df_matrix.copy()
+        df_target = df_matrix
         is_mysql = False
     else:
         df_db = load_scoring_from_mysql()
         if df_db is not None and not df_db.empty:
-            df_target = df_db.copy()
+            df_target = df_db
             is_mysql = True
         elif df_matrix is not None and not df_matrix.empty:
-            df_target = df_matrix.copy()
+            df_target = df_matrix
             is_mysql = False
         else:
             st.info("Belum ada data hasil skoring yang tersedia.")
@@ -55,165 +54,86 @@ def render_tab_scoring(df_matrix, dfs=None):
     if not mapel_lookup:
         mapel_lookup = get_mapel_lookup_dict(None)
 
-    mapel_cols = [
-        c
-        for c in df_target.columns
-        if str(c).strip().lower()
-        in ["mapel", "mata_pelajaran", "mata pelajaran", "subject", "paket"]
-    ]
-    if not mapel_cols and df_matrix is not None and not df_matrix.empty:
-        m_col_mat = next(
-            (
-                c
-                for c in df_matrix.columns
-                if str(c).strip().lower()
-                in ["mapel", "mata_pelajaran", "mata pelajaran", "subject", "paket"]
-            ),
-            None,
-        )
-        if m_col_mat:
-            usr_mat = df_matrix.columns[0]
-            usr_t = "username" if "username" in df_target.columns else df_target.columns[0]
-            u_map = dict(
-                zip(
-                    df_matrix[usr_mat].astype(str).str.strip(),
-                    df_matrix[m_col_mat].astype(str).str.strip(),
-                )
-            )
-            df_target["mapel"] = df_target[usr_t].astype(str).str.strip().map(u_map)
-            mapel_cols = ["mapel"]
-
-    if mapel_cols:
-        mapel_col = mapel_cols[0]
-        df_target[mapel_col] = df_target[mapel_col].map(
-            lambda x: mapel_lookup.get(
-                str(x).strip().upper(),
-                mapel_lookup.get(str(x).strip(), str(x).strip()),
-            )
-        )
-        list_mapel = sorted(
-            [
-                str(x)
-                for x in df_target[mapel_col].dropna().unique().tolist()
-                if str(x).strip() not in ["", "nan", "None", "-"]
-            ]
-        )
-        if list_mapel:
-            selected_mapel = st.selectbox(
-                "Pilih Mata Pelajaran:",
-                options=list_mapel,
-                key="filter_scoring_mapel",
-            )
-            df_target = df_target[df_target[mapel_col] == selected_mapel].copy()
-
-    usr_col = (
-        "username" if "username" in df_target.columns else df_target.columns[0]
+    # Deteksi kolom mapel
+    mapel_col = next(
+        (c for c in df_target.columns if str(c).strip().lower() in ["mapel", "mata_pelajaran", "mata pelajaran", "subject", "paket"]),
+        None
     )
 
-    if is_mysql:
-        avg_soal = (
-            float(df_target["Jumlah_Soal"].mean())
-            if "Jumlah_Soal" in df_target.columns and df_target["Jumlah_Soal"].notna().any()
-            else 25.0
-        )
-        avg_skor = (
-            float(df_target["skor_mentah"].mean())
-            if "skor_mentah" in df_target.columns
-            else 0.0
-        )
-        avg_konversi = (
-            float(df_target["skor_konversi_ctt"].mean())
-            if "skor_konversi_ctt" in df_target.columns
-            else 0.0
+    # Ambil list mapel dari cache precomputed CTT jika tersedia
+    ctt_cache = st.session_state.get("ctt_summary_precomputed", {})
+    if ctt_cache and isinstance(ctt_cache, dict):
+        list_mapel = [m for m in sorted(ctt_cache.keys()) if m != "ALL"]
+    elif mapel_col:
+        list_mapel = sorted([
+            mapel_lookup.get(str(x).strip().upper(), str(x).strip())
+            for x in df_target[mapel_col].dropna().unique()
+            if str(x).strip() not in ["", "nan", "None", "-"]
+        ])
+    else:
+        list_mapel = []
+
+    selected_mapel = None
+    if list_mapel:
+        selected_mapel = st.selectbox(
+            "Pilih Mata Pelajaran:",
+            options=list_mapel,
+            key="filter_scoring_mapel",
         )
 
-        df_chart_source = df_target.copy()
-        if "skor_konversi_ctt" in df_chart_source.columns:
-            df_chart_source["Nilai_Konversi"] = df_chart_source[
-                "skor_konversi_ctt"
-            ]
-        elif (
-            "skor_mentah" in df_chart_source.columns and avg_soal > 0
-        ):
-            df_chart_source["Nilai_Konversi"] = (
-                df_chart_source["skor_mentah"] / avg_soal
-            ) * 100.0
-    else:
-        skor_col_name = (
-            "skor_mentah" if "skor_mentah" in df_target.columns else None
-        )
-        meta_cols = [
-            usr_col,
-            "tahun",
-            "username",
-            "user_id",
-            "nama",
-            "mapel",
-            "mata_pelajaran",
-            "subject",
-            "kode_paket",
-            "kd_paket",
-            "paket",
-            "skor_mentah",
-            "Nilai_Konversi",
-            "nilai_konversi",
-            "skor_konversi_ctt",
-            "skor_konversi_rasch",
-            "skor_konversi_1pl",
-            "skor_konversi_2pl",
-            "skor_konversi_3pl",
-            "Jumlah_Soal",
-            "jumlah_soal",
-            "_school_key",
-            "_prop_key_user",
-            "kd_prop",
-            "kode_provinsi",
-        ]
-        item_cols = [
-            c for c in df_target.columns
-            if c not in meta_cols and (df_target[c].dtype != object or pd.to_numeric(df_target[c], errors="coerce").notna().sum() > 0)
-        ]
-        avg_soal = (
-            float(len(item_cols))
-            if item_cols
-            else float(
-                df_target["Jumlah_Soal"].mean()
-                if "Jumlah_Soal" in df_target.columns
-                else 25.0
-            )
-        )
-        avg_skor = (
-            float(df_target[skor_col_name].mean()) if skor_col_name else 0.0
-        )
-        if "Nilai_Konversi" in df_target.columns:
-            avg_konversi = float(df_target["Nilai_Konversi"].mean())
-        elif "skor_konversi_ctt" in df_target.columns:
-            avg_konversi = float(df_target["skor_konversi_ctt"].mean())
+    # Slice data untuk mapel terpilih (tanpa copy seluruh 3.34M rows)
+    if mapel_col and selected_mapel:
+        if selected_mapel in df_target[mapel_col].values:
+            df_active = df_target[df_target[mapel_col] == selected_mapel]
         else:
-            avg_konversi = (
-                (avg_skor / avg_soal * 100.0) if avg_soal > 0 else 0.0
-            )
-        df_chart_source = df_target.copy()
+            # Mapel di df_target mungkin belum dinormalisasi
+            df_active = df_target[
+                df_target[mapel_col].astype(str).str.strip().str.upper() == selected_mapel.upper()
+            ]
+    else:
+        df_active = df_target
+
+    # Cek metrik dari precomputed cache untuk respon sub-milidetik
+    used_cache = False
+    if ctt_cache and selected_mapel and selected_mapel in ctt_cache:
+        c_info = ctt_cache[selected_mapel]
+        total_resp = c_info.get("N", len(df_active))
+        avg_skor = c_info.get("mean_skor_mentah", 0.0)
+        avg_soal = float(c_info.get("k", 25))
+        avg_konversi = c_info.get("mean", 0.0)
+        used_cache = True
+    elif ctt_cache and "ALL" in ctt_cache and not selected_mapel:
+        c_info = ctt_cache["ALL"]
+        total_resp = c_info.get("N", len(df_active))
+        avg_skor = c_info.get("mean_skor_mentah", 0.0)
+        avg_soal = float(c_info.get("k", 25))
+        avg_konversi = c_info.get("mean", 0.0)
+        used_cache = True
+    else:
+        total_resp = len(df_active)
+        avg_soal = float(df_active["Jumlah_Soal"].mean()) if "Jumlah_Soal" in df_active.columns else 25.0
+        avg_skor = float(df_active["skor_mentah"].mean()) if "skor_mentah" in df_active.columns else 0.0
+        if "skor_konversi_ctt" in df_active.columns:
+            avg_konversi = float(df_active["skor_konversi_ctt"].mean())
+        elif "Nilai_Konversi" in df_active.columns:
+            avg_konversi = float(df_active["Nilai_Konversi"].mean())
+        else:
+            avg_konversi = (avg_skor / avg_soal * 100.0) if avg_soal > 0 else 0.0
 
     # --- DISPLAY METRICS ---
     c1, c2, c3 = st.columns(3)
-    c1.metric("Total Responden", f"{len(df_target):,}")
+    c1.metric("Total Responden", f"{total_resp:,}")
     c2.metric("Rata-rata Skor Mentah", f"{avg_skor:.2f} / {avg_soal:.1f}")
     c3.metric("Rata-rata Nilai Konversi Klasik", f"{avg_konversi:.2f}")
     st.divider()
 
-    # --- HISTOGRAM CHART ---
-    df_chart = (
-        df_chart_source.sample(n=50000, random_state=42)
-        if len(df_chart_source) > 50000
-        else df_chart_source
-    )
+    # --- HISTOGRAM CHART (Sampel cepat 20k rows) ---
+    sample_size = min(len(df_active), 25000)
+    df_chart = df_active.sample(n=sample_size, random_state=42) if len(df_active) > sample_size else df_active
     fig_score = render_score_histogram(df_chart, col_type="skor_mentah")
     st.plotly_chart(fig_score, use_container_width=True)
 
     # --- TABLE DISPLAY ---
-    df_display_scoring = df_target.copy()
-
     selected_cols = []
     for col in [
         "username",
@@ -227,13 +147,13 @@ def render_tab_scoring(df_matrix, dfs=None):
         "skor_konversi_2pl",
         "skor_konversi_3pl",
     ]:
-        if col in df_display_scoring.columns and col not in selected_cols:
+        if col in df_active.columns and col not in selected_cols:
             selected_cols.append(col)
 
     if not selected_cols:
-        selected_cols = list(df_display_scoring.columns[:6])
+        selected_cols = list(df_active.columns[:6])
 
-    df_display_scoring = df_display_scoring[selected_cols].head(100).copy()
+    df_display_scoring = df_active[selected_cols].head(100).copy()
 
     rename_map = {
         "username": "Username",

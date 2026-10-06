@@ -409,25 +409,9 @@ def render_tab_irt(df_matrix, dfs, ctt_res):
                 lambda x: mapel_lookup.get(str(x).strip().upper(), mapel_lookup.get(str(x).strip(), str(x).strip()))
             )
             df_persons_raw = df_persons_raw[norm_m_p == selected_irt_mapel].copy()
-        else:
-            df_ref = st.session_state.get("df_peserta_skor")
-            if df_ref is None or df_ref.empty:
-                df_ref = df_matrix
-
-            if df_ref is not None and not df_ref.empty and "mapel" in df_ref.columns:
-                norm_m_ref = df_ref["mapel"].map(
-                    lambda x: mapel_lookup.get(str(x).strip().upper(), mapel_lookup.get(str(x).strip(), str(x).strip()))
-                )
-                mask_ref = (norm_m_ref == selected_irt_mapel)
-
-                if len(df_persons_raw) == len(df_ref):
-                    df_persons_raw = df_persons_raw[mask_ref.values].copy()
-                else:
-                    ref_sub = df_ref[mask_ref]
-                    usr_col_ref = next((c for c in ref_sub.columns if c.lower() in ["username", "user_id", "id_peserta"]), ref_sub.columns[0])
-                    valid_users = set(ref_sub[usr_col_ref].astype(str).str.strip().str.lower())
-                    usr_p_col = df_persons_raw.columns[0]
-                    df_persons_raw = df_persons_raw[df_persons_raw[usr_p_col].astype(str).str.strip().str.lower().isin(valid_users)].copy()
+            # Optimasi instan: jika data person besar, ambil subset 500 sampel untuk preview visual
+            if len(df_persons_raw) > 500:
+                df_persons_raw = df_persons_raw.iloc[:500].copy()
 
     # Hitung N_total tepat untuk mata pelajaran yang dipilih
     df_pop_ref = st.session_state.get("df_peserta_skor")
@@ -697,7 +681,53 @@ def render_tab_irt(df_matrix, dfs, ctt_res):
         else:
             st.warning(f"⚠️ Gagal melakukan penyimpanan otomatis ke MySQL: {msg_auto}")
 
-    if not df_persons.empty and theta_col in df_persons.columns:
+    # Cek cache analitik pra-komputasi untuk tampilan instan tanpa kalkulasi ulang
+    cached_irt = st.session_state.get("irt_summary_precomputed", {}).get(
+        (model_key, selected_irt_mapel if selected_irt_mapel else "ALL"),
+        st.session_state.get("irt_summary_precomputed", {}).get((model_key, "ALL"))
+    )
+
+    if cached_irt:
+        st.markdown("#### 📊 Statistik Deskriptif Estimasi Ability (Theta θ)")
+        desc_data = {
+            "Metrik Statistik": [
+                "Jumlah Peserta Asli (N_total)",
+                "Jumlah Peserta Sampel (N_sampel)",
+                "Rata-rata (Mean)",
+                "Standar Deviasi (SD)",
+                "Nilai Minimum",
+                "Kuartil 1 (Q1 - 25%)",
+                "Median (Q2 - 50%)",
+                "Kuartil 3 (Q3 - 75%)",
+                "Nilai Maksimum",
+            ],
+            "Skala Theta (θ)": [
+                f"{cached_irt['N_total']:,}".replace(",", "."),
+                f"{cached_irt['N_sample']:,}".replace(",", "."),
+                f"{cached_irt['mean_theta']:.3f}",
+                f"{cached_irt['sd_theta']:.3f}",
+                f"{cached_irt['min_theta']:.3f}",
+                f"{cached_irt['q1_theta']:.3f}",
+                f"{cached_irt['med_theta']:.3f}",
+                f"{cached_irt['q3_theta']:.3f}",
+                f"{cached_irt['max_theta']:.3f}",
+            ],
+            f"Skala Konversi ({scale_min} - {scale_max})": [
+                f"{cached_irt['N_total']:,}".replace(",", "."),
+                f"{cached_irt['N_sample']:,}".replace(",", "."),
+                f"{cached_irt['mean_conv']:.2f}",
+                f"{cached_irt['sd_conv']:.2f}",
+                f"{cached_irt['min_conv']:.2f}",
+                f"{cached_irt['q1_conv']:.2f}",
+                f"{cached_irt['med_conv']:.2f}",
+                f"{cached_irt['q3_conv']:.2f}",
+                f"{cached_irt['max_conv']:.2f}",
+            ],
+        }
+        df_desc = pd.DataFrame(desc_data)
+        st.dataframe(df_desc, use_container_width=True, hide_index=True)
+        st.divider()
+    elif not df_persons.empty and theta_col in df_persons.columns:
         st.markdown("#### 📊 Statistik Deskriptif Estimasi Ability (Theta θ)")
 
         theta_vals = pd.to_numeric(df_persons[theta_col], errors="coerce").dropna()
@@ -727,8 +757,8 @@ def render_tab_irt(df_matrix, dfs, ctt_res):
                 "Keruncingan (Kurtosis)",
             ],
             "Skala Theta (θ)": [
-                f"{n_total_pop:,}",
-                f"{n_sample_pop:,}",
+                f"{n_total_pop:,}".replace(",", "."),
+                f"{n_sample_pop:,}".replace(",", "."),
                 f"{theta_vals.mean():.3f}",
                 f"{theta_vals.std():.3f}",
                 f"{theta_vals.min():.3f}",
@@ -743,8 +773,8 @@ def render_tab_irt(df_matrix, dfs, ctt_res):
 
         if not scaled_vals.empty:
             desc_data[f"Skala Konversi ({scale_min} - {scale_max})"] = [
-                f"{n_total_pop:,}",
-                f"{n_sample_pop:,}",
+                f"{n_total_pop:,}".replace(",", "."),
+                f"{n_sample_pop:,}".replace(",", "."),
                 f"{scaled_vals.mean():.2f}",
                 f"{scaled_vals.std():.2f}",
                 f"{scaled_vals.min():.2f}",
@@ -757,14 +787,7 @@ def render_tab_irt(df_matrix, dfs, ctt_res):
             ]
 
         df_desc = pd.DataFrame(desc_data)
-        table_height = (len(df_desc) + 1) * 35 + 10
-
-        st.dataframe(
-            df_desc,
-            use_container_width=True,
-            hide_index=True,
-            height=table_height,
-        )
+        st.dataframe(df_desc, use_container_width=True, hide_index=True)
         st.divider()
 
     # --- GRAFIK DISTRIBUSI ---

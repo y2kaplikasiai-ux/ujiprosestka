@@ -135,21 +135,15 @@ def render_tab_student_scores(df_matrix_school, dfs=None):
     )
 
     # --- 1. AMBIL DATA MASTER (MEMORY -> FALLBACK MYSQL) ---
-    df_master = None
     cand_df = st.session_state.get("df_peserta_skor")
     if cand_df is None or cand_df.empty:
         cand_df = df_matrix_school if (df_matrix_school is not None and not df_matrix_school.empty) else None
 
-    if cand_df is not None and not cand_df.empty:
-        has_sch = any(c in cand_df.columns for c in ["nama_sekolah", "sekolah", "nama_lembaga", "kode_sekolah", "npsn", "_school_key"])
-        has_score = any(c in cand_df.columns for c in ["skor_konversi_ctt", "skor_mentah", "skor_konversi_rasch"])
-        if has_sch and has_score:
-            df_master = cand_df.copy()
-
-    if df_master is None or df_master.empty:
+    if cand_df is None or cand_df.empty:
         df_db = load_data_from_mysql()
         if df_db is not None and not df_db.empty:
-            df_master = df_db.copy()
+            cand_df = df_db
+            st.session_state["df_peserta_skor"] = cand_df
         else:
             st.info(
                 "💡 **Informasi:** Data peserta atau skor belum tersedia. "
@@ -157,30 +151,7 @@ def render_tab_student_scores(df_matrix_school, dfs=None):
             )
             return
 
-    # Normalisasi nama kolom penting
-    if "kode_sekolah" not in df_master.columns:
-        for alt_k in ["npsn", "_school_key", "NPSN", "kode_lembaga"]:
-            if alt_k in df_master.columns:
-                df_master["kode_sekolah"] = df_master[alt_k]
-                break
-
-    if "nama_sekolah" not in df_master.columns:
-        for alt_n in ["sekolah", "nama_lembaga", "Nama_Sekolah", "NAMA_SEKOLAH"]:
-            if alt_n in df_master.columns:
-                df_master["nama_sekolah"] = df_master[alt_n]
-                break
-
-    df_master["kode_sekolah"] = df_master.get("kode_sekolah", df_master.get("_school_key", "-")).fillna("-").astype(str).str.strip()
-    df_master["nama_sekolah"] = df_master.get("nama_sekolah", df_master["kode_sekolah"]).fillna(df_master["kode_sekolah"]).astype(str).str.strip()
-    df_master["nama_kabupaten"] = df_master.get("nama_kabupaten", df_master.get("kabupaten", "-")).fillna("-").astype(str).str.strip()
-    df_master["nama_provinsi"] = df_master.get("nama_provinsi", df_master.get("provinsi", "-")).fillna("-").astype(str).str.strip()
-
-    # Bersihkan nama provinsi & kabupaten
-    df_master.loc[df_master["nama_provinsi"].isin(["", "nan", "None", "-", "TIDAK TERDEFINISI"]), "nama_provinsi"] = "PROVINSI LAINNYA"
-    df_master.loc[df_master["nama_kabupaten"].isin(["", "nan", "None", "-", "TIDAK TERDEFINISI"]), "nama_kabupaten"] = "KABUPATEN/KOTA LAINNYA"
-    df_master.loc[df_master["nama_sekolah"].isin(["", "nan", "None", "-"]), "nama_sekolah"] = df_master["kode_sekolah"]
-
-    # Normalisasi nama mata pelajaran
+    # Normalisasi lookup nama mata pelajaran
     mapel_lookup = {}
     if dfs and isinstance(dfs, dict) and "mapel" in dfs and dfs["mapel"] is not None and not dfs["mapel"].empty:
         mapel_lookup = get_mapel_lookup_dict(dfs["mapel"])
@@ -189,41 +160,44 @@ def render_tab_student_scores(df_matrix_school, dfs=None):
     if not mapel_lookup:
         mapel_lookup = get_mapel_lookup_dict(None)
 
-    if "mapel" in df_master.columns and mapel_lookup:
-        df_master["mapel"] = df_master["mapel"].map(
-            lambda x: mapel_lookup.get(str(x).strip().upper(), mapel_lookup.get(str(x).strip(), str(x).strip()))
-        )
-
-    # Pastikan data biodata siswa (username, nisn, nama, jenis_kelamin) terisi
-    df_master = enrich_biodata_if_needed(df_master, dfs)
-
     # --- 2. PILIHAN METRIK SKOR / NILAI ---
     score_metric_options = {}
-    if "skor_konversi_ctt" in df_master.columns and df_master["skor_konversi_ctt"].notna().any():
+    if "skor_konversi_ctt" in cand_df.columns:
         score_metric_options["Nilai Skala CTT (0 - 100)"] = "skor_konversi_ctt"
-    if "skor_mentah" in df_master.columns and df_master["skor_mentah"].notna().any():
+    if "skor_mentah" in cand_df.columns:
         score_metric_options["Skor Mentah (Jumlah Benar)"] = "skor_mentah"
-    if "skor_konversi_rasch" in df_master.columns and df_master["skor_konversi_rasch"].notna().any():
+    if "skor_konversi_rasch" in cand_df.columns:
         score_metric_options["Nilai Skala IRT Rasch"] = "skor_konversi_rasch"
-    if "skor_konversi_1pl" in df_master.columns and df_master["skor_konversi_1pl"].notna().any():
+    if "skor_konversi_1pl" in cand_df.columns:
         score_metric_options["Nilai Skala IRT 1-PL"] = "skor_konversi_1pl"
-    if "skor_konversi_2pl" in df_master.columns and df_master["skor_konversi_2pl"].notna().any():
+    if "skor_konversi_2pl" in cand_df.columns:
         score_metric_options["Nilai Skala IRT 2-PL"] = "skor_konversi_2pl"
-    if "skor_konversi_3pl" in df_master.columns and df_master["skor_konversi_3pl"].notna().any():
+    if "skor_konversi_3pl" in cand_df.columns:
         score_metric_options["Nilai Skala IRT 3-PL"] = "skor_konversi_3pl"
 
     if not score_metric_options:
-        score_metric_options["Nilai"] = "skor_mentah" if "skor_mentah" in df_master.columns else df_master.columns[-1]
+        score_metric_options["Nilai"] = "skor_mentah" if "skor_mentah" in cand_df.columns else cand_df.columns[-1]
 
-    # --- 3. FILTER BERTINGKAT (PROVINSI -> KABUPATEN/KOTA -> SEKOLAH) ---
+    # --- 3. FILTER BERTINGKAT (PROVINSI -> KABUPATEN/KOTA -> SEKOLAH) DENGAN CACHE RINGAN ---
     st.markdown("#### 🎯 Filter Wilayah & Satuan Pendidikan")
 
     col_flt_prov, col_flt_kab, col_flt_sek = st.columns(3)
 
+    # Ambil hierarki wilayah ringan (hanya 36k baris unik, bukan 3.34 juta baris)
+    df_geo = st.session_state.get("geo_hierarchy")
+    if df_geo is None or df_geo.empty:
+        df_comp = st.session_state.get("df_school_composite")
+        if df_comp is not None and not df_comp.empty and "nama_provinsi" in df_comp.columns:
+            df_geo = df_comp[["kode_provinsi", "nama_provinsi", "nama_kabupaten", "kode_sekolah", "nama_sekolah"]].drop_duplicates()
+        else:
+            from analytics_cache import compute_geo_hierarchy
+            df_geo = compute_geo_hierarchy(cand_df)
+            st.session_state["geo_hierarchy"] = df_geo
+
     # 1. Pilihan Provinsi
     prov_list = sorted([
-        p for p in df_master["nama_provinsi"].dropna().unique()
-        if str(p).strip() and str(p) != "nan"
+        str(p).strip() for p in df_geo["nama_provinsi"].dropna().unique()
+        if str(p).strip() not in ["", "nan", "None", "-", "TIDAK TERDEFINISI"]
     ])
     if not prov_list:
         prov_list = ["Semua Provinsi"]
@@ -237,13 +211,13 @@ def render_tab_student_scores(df_matrix_school, dfs=None):
             help="Pilih provinsi satuan pendidikan",
         )
 
-    # Filter data berdasarkan provinsi terpilih
-    df_by_prov = df_master[df_master["nama_provinsi"] == selected_prov].copy() if selected_prov in prov_list else df_master.copy()
+    # Filter hierarki berdasarkan provinsi
+    df_geo_prov = df_geo[df_geo["nama_provinsi"] == selected_prov] if selected_prov in prov_list else df_geo
 
     # 2. Pilihan Kabupaten/Kota/Rayon
     kab_list = sorted([
-        k for k in df_by_prov["nama_kabupaten"].dropna().unique()
-        if str(k).strip() and str(k) != "nan"
+        str(k).strip() for k in df_geo_prov["nama_kabupaten"].dropna().unique()
+        if str(k).strip() not in ["", "nan", "None", "-", "TIDAK TERDEFINISI"]
     ])
     if not kab_list:
         kab_list = ["Semua Kabupaten/Kota"]
@@ -257,19 +231,16 @@ def render_tab_student_scores(df_matrix_school, dfs=None):
             help="Pilih kabupaten atau kota pada provinsi terpilih",
         )
 
-    # Filter data berdasarkan kabupaten terpilih
-    df_by_kab = df_by_prov[df_by_prov["nama_kabupaten"] == selected_kab].copy() if selected_kab in kab_list else df_by_prov.copy()
+    df_geo_kab = df_geo_prov[df_geo_prov["nama_kabupaten"] == selected_kab] if selected_kab in kab_list else df_geo_prov
 
     # 3. Pilihan Sekolah
-    # Susun label sekolah unik: "NAMA SEKOLAH (KODE SEKOLAH)"
-    df_sch_unique = df_by_kab[["kode_sekolah", "nama_sekolah"]].drop_duplicates().sort_values(by="nama_sekolah")
-    
+    df_sch_unique = df_geo_kab[["kode_sekolah", "nama_sekolah"]].drop_duplicates().sort_values(by="nama_sekolah")
     sch_options = []
     sch_lookup = {}
     for _, row in df_sch_unique.iterrows():
         kd = str(row["kode_sekolah"]).strip()
         nm = str(row["nama_sekolah"]).strip()
-        label = f"{nm} ({kd})" if kd != "-" and kd != nm else nm
+        label = f"{nm} ({kd})" if kd not in ["-", "", "nan"] and kd != nm else nm
         sch_options.append(label)
         sch_lookup[label] = (kd, nm)
 
@@ -288,15 +259,37 @@ def render_tab_student_scores(df_matrix_school, dfs=None):
 
     target_kd, target_nm = sch_lookup[selected_sch_label]
 
-    # Filter data untuk sekolah terpilih
-    if target_kd != "-":
-        df_school = df_by_kab[df_by_kab["kode_sekolah"] == target_kd].copy()
+    # Filter data KHUSUS sekolah terpilih secara instan (hanya menghasilkan ~20-100 baris, bukan 3.34 juta baris)
+    sek_col = "kode_sekolah" if "kode_sekolah" in cand_df.columns else "_school_key" if "_school_key" in cand_df.columns else None
+    if sek_col and target_kd not in ["-", "", "nan"]:
+        df_school = cand_df[cand_df[sek_col].astype(str).str.strip() == target_kd].copy()
+    elif "nama_sekolah" in cand_df.columns and target_nm not in ["-", "", "nan"]:
+        df_school = cand_df[cand_df["nama_sekolah"].astype(str).str.strip() == target_nm].copy()
     else:
-        df_school = df_by_kab[df_by_kab["nama_sekolah"] == target_nm].copy()
+        u_col = "username" if "username" in cand_df.columns else cand_df.columns[0]
+        df_school = cand_df[cand_df[u_col].astype(str).str[:9].str.upper() == target_kd].copy()
 
     if df_school.empty:
         st.info("ℹ️ Tidak ada data peserta untuk sekolah terpilih.")
         return
+
+    # Normalisasi kolom identitas sekolah pada subset terpilih
+    if "kode_sekolah" not in df_school.columns:
+        df_school["kode_sekolah"] = target_kd
+    if "nama_sekolah" not in df_school.columns:
+        df_school["nama_sekolah"] = target_nm
+    if "nama_kabupaten" not in df_school.columns:
+        df_school["nama_kabupaten"] = selected_kab
+    if "nama_provinsi" not in df_school.columns:
+        df_school["nama_provinsi"] = selected_prov
+
+    if "mapel" in df_school.columns and mapel_lookup:
+        df_school["mapel"] = df_school["mapel"].map(
+            lambda x: mapel_lookup.get(str(x).strip().upper(), mapel_lookup.get(str(x).strip(), str(x).strip()))
+        )
+
+    # Lengkapi biodata siswa (NISN, Nama, Gender) HANYA untuk siswa di sekolah ini saja
+    df_school = enrich_biodata_if_needed(df_school, dfs)
 
     # Opsi pilihan metrik nilai di bagian samping filter atau accordion
     col_metric, col_dummy = st.columns([2.5, 3.5])

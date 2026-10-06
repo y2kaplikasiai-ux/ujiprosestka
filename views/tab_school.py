@@ -40,283 +40,270 @@ def load_data_from_mysql():
 def render_tab_school(df_matrix_school, dfs=None, irt_results=None):
     st.subheader("🏫 Hasil Analisis Statistik Per Sekolah")
 
-    # --- 1. AMBIL DATA (MEMORY UTAMA -> FALLBACK MYSQL) ---
-    df_master = None
+    # --- JALUR CEPAT: PRA-KOMPUTASI INSTAN (HANYA ~36k BARIS, BUKAN 3.34 JUTA BARIS) ---
+    df_cached_comp = st.session_state.get("df_school_composite")
+    df_cached_m = st.session_state.get("df_school_by_mapel")
 
-    # Jika data di memori sudah memiliki informasi sekolah dan nilai, gunakan langsung agar cepat
-    cand_df = st.session_state.get("df_peserta_skor")
-    if cand_df is None or cand_df.empty:
-        cand_df = df_matrix_school if (df_matrix_school is not None and not df_matrix_school.empty) else None
+    if df_cached_comp is not None and not df_cached_comp.empty:
+        # 1. Pilihan Mata Pelajaran
+        available_mapels = []
+        if df_cached_m is not None and not df_cached_m.empty and "mapel" in df_cached_m.columns:
+            available_mapels = sorted([
+                str(m).strip() for m in df_cached_m["mapel"].dropna().unique()
+                if str(m).strip() not in ["", "nan", "None", "-"]
+            ])
 
-    if cand_df is not None and not cand_df.empty:
-        has_sch = any(c in cand_df.columns for c in ["nama_sekolah", "sekolah", "nama_lembaga", "kode_sekolah", "npsn", "_school_key"])
-        has_score = any(c in cand_df.columns for c in ["skor_konversi_ctt", "skor_mentah", "skor_konversi_rasch"])
-        if has_sch and has_score:
-            essential_cols = [
-                c for c in cand_df.columns 
-                if c in [
-                    "username", "user_id", "id_peserta", "nama", "mapel", "nama_sekolah", "sekolah", "nama_lembaga", 
-                    "kode_sekolah", "npsn", "_school_key", "nama_kabupaten", "kabupaten", 
-                    "nama_provinsi", "provinsi", "kd_prop", "kode_provinsi", "skor_mentah", 
-                    "Jumlah_Soal", "skor_konversi_ctt", "skor_konversi_rasch", 
-                    "skor_konversi_1pl", "skor_konversi_2pl", "skor_konversi_3pl"
-                ]
-            ]
-            if not essential_cols:
-                essential_cols = list(cand_df.columns[:30])
-            df_master = cand_df[essential_cols].copy()
-
-    if df_master is None or df_master.empty:
-        df_db = load_data_from_mysql()
-        if df_db is not None and not df_db.empty:
-            df_master = df_db.copy()
-        else:
-            st.info(
-                "💡 **Informasi:** Berkas **Master Sekolah** (`sekolah`) belum diunggah atau "
-                "data peserta belum diproses ke database MySQL."
+        selected_mapels = []
+        if available_mapels:
+            st.markdown("#### 📚 Filter & Penggabungan Mata Pelajaran")
+            selected_mapels = st.multiselect(
+                "Pilih Mata Pelajaran (Bisa memilih lebih dari 1 untuk analisis gabungan):",
+                options=available_mapels,
+                default=available_mapels,
+                key="filter_school_mapel_multi",
+                help="Pilih 1 atau beberapa mata pelajaran. Jika memilih lebih dari 1 mata pelajaran, nilai dihitung dari rata-rata gabungan."
             )
-            return
+            if not selected_mapels:
+                st.warning("⚠️ Silakan pilih setidaknya satu mata pelajaran untuk dianalisis.")
+                return
 
-    # Normalisasi penamaan kolom penting agar seragam
-    if "kode_sekolah" not in df_master.columns:
-        for alt_k in ["npsn", "_school_key", "NPSN", "kode_lembaga"]:
-            if alt_k in df_master.columns:
-                df_master["kode_sekolah"] = df_master[alt_k]
-                break
+            if len(selected_mapels) > 1:
+                st.info(f"✨ **Analisis Gabungan ({len(selected_mapels)} Mapel):** {', '.join(selected_mapels)}. Rerata nilai sekolah dihitung dari gabungan nilai siswa.")
+            else:
+                st.caption(f"📌 **Mata Pelajaran Aktif:** {selected_mapels[0]}")
 
-    if "nama_sekolah" not in df_master.columns:
-        for alt_n in ["sekolah", "nama_lembaga", "Nama_Sekolah", "NAMA_SEKOLAH"]:
-            if alt_n in df_master.columns:
-                df_master["nama_sekolah"] = df_master[alt_n]
-                break
-
-    if "kode_sekolah" not in df_master.columns and "_school_key" in df_master.columns:
-        df_master["kode_sekolah"] = df_master["_school_key"]
-    elif "kode_sekolah" in df_master.columns and "_school_key" not in df_master.columns:
-        df_master["_school_key"] = df_master["kode_sekolah"]
-
-    if "kode_provinsi" not in df_master.columns and "kd_prop" in df_master.columns:
-        df_master["kode_provinsi"] = df_master["kd_prop"]
-
-    df_master["kode_sekolah"] = df_master.get("kode_sekolah", df_master.get("_school_key", "-")).fillna("-").astype(str).str.strip()
-    
-    # Pencarian berlapis untuk menghindari 'Sekolah Tanpa Nama'
-    raw_nama_sekolah = None
-    for col_candidate in ["nama_sekolah", "sekolah", "nama_lembaga", "Nama_Sekolah"]:
-        if col_candidate in df_master.columns:
-            raw_nama_sekolah = df_master[col_candidate]
-            break
-            
-    if raw_nama_sekolah is not None:
-        df_master["nama_sekolah"] = raw_nama_sekolah.fillna(df_master["kode_sekolah"]).astype(str).str.strip()
-        df_master.loc[df_master["nama_sekolah"].isin(["", "nan", "None", "NONE"]), "nama_sekolah"] = df_master["kode_sekolah"]
-    else:
-        df_master["nama_sekolah"] = df_master["kode_sekolah"]
-
-    df_master["nama_kabupaten"] = df_master.get("nama_kabupaten", df_master.get("kabupaten", "-")).fillna("-").astype(str).str.strip()
-    df_master["nama_provinsi"] = df_master.get("nama_provinsi", df_master.get("provinsi", "-")).fillna("-").astype(str).str.strip()
-    df_master["kode_provinsi"] = df_master.get("kode_provinsi", df_master.get("kd_prop", "-")).fillna("-").astype(str).str.strip()
-
-    # --- 2. FILTER MATA PELAJARAN (DI BAGIAN PALING ATAS - MULTI-SELECT / GABUNGAN) ---
-    mapel_lookup = {}
-    if dfs and isinstance(dfs, dict) and "mapel" in dfs and dfs["mapel"] is not None and not dfs["mapel"].empty:
-        mapel_lookup = get_mapel_lookup_dict(dfs["mapel"])
-    if not mapel_lookup:
-        mapel_lookup = st.session_state.get("mapel_dict", {})
-    if not mapel_lookup and "val_result" in st.session_state:
-        df_mpl_sess = st.session_state["val_result"].get("dataframes", {}).get("mapel")
-        if df_mpl_sess is not None and not df_mpl_sess.empty:
-            mapel_lookup = get_mapel_lookup_dict(df_mpl_sess)
-    if not mapel_lookup:
-        mapel_lookup = get_mapel_lookup_dict(None)
-
-    if "mapel" in df_master.columns and mapel_lookup:
-        df_master["mapel"] = df_master["mapel"].map(
-            lambda x: mapel_lookup.get(str(x).strip().upper(), mapel_lookup.get(str(x).strip(), str(x).strip()))
-        )
-
-    available_mapels = []
-    if "mapel" in df_master.columns:
-        available_mapels = sorted([
-            str(m).strip() for m in df_master["mapel"].dropna().unique()
-            if str(m).strip() not in ["", "nan", "None", "-"]
-        ])
-
-    df_filtered_school = df_master.copy()
-
-    if available_mapels:
-        st.markdown("#### 📚 Filter & Penggabungan Mata Pelajaran")
-        selected_mapels = st.multiselect(
-            "Pilih Mata Pelajaran (Bisa memilih lebih dari 1 untuk analisis gabungan):",
-            options=available_mapels,
-            default=available_mapels,
-            key="filter_school_mapel_multi",
-            help="Pilih 1 atau beberapa mata pelajaran. Jika memilih lebih dari 1 mata pelajaran (misal 3 mapel), nilai per peserta akan dihitung dari rata-rata gabungan sebelum dianalisis per sekolah."
-        )
-        if not selected_mapels:
-            st.warning("⚠️ Silakan pilih setidaknya satu mata pelajaran untuk dianalisis.")
-            return
-
-        df_filtered_school = df_filtered_school[df_filtered_school["mapel"].isin(selected_mapels)].copy()
-        if len(selected_mapels) > 1:
-            st.info(f"✨ **Analisis Gabungan ({len(selected_mapels)} Mapel):** {', '.join(selected_mapels)}. Rerata nilai sekolah dihitung dari gabungan nilai siswa.")
-        else:
-            st.caption(f"📌 **Mata Pelajaran Aktif:** {selected_mapels[0]}")
-
-    # --- 3. DETEKSI METODE NILAI KONVERSI ---
-    available_methods = {}
-
-    # Deteksi langsung kolom skor konversi standar (berlaku baik dari memory maupun MySQL)
-    if "skor_konversi_ctt" in df_master.columns and df_master["skor_konversi_ctt"].notna().any():
-        available_methods["Nilai Konversi (Klasik/CTT)"] = "skor_konversi_ctt"
-    elif "Nilai_Konversi" in df_master.columns and df_master["Nilai_Konversi"].notna().any():
-        available_methods["Nilai Konversi (Klasik/CTT)"] = "Nilai_Konversi"
-
-    if "skor_konversi_rasch" in df_master.columns and df_master["skor_konversi_rasch"].notna().any():
-        available_methods["Nilai Konversi (IRT - Rasch/1PL)"] = "skor_konversi_rasch"
-    elif "skor_konversi_1pl" in df_master.columns and df_master["skor_konversi_1pl"].notna().any():
-        available_methods["Nilai Konversi (IRT - Rasch/1PL)"] = "skor_konversi_1pl"
-
-    if "skor_konversi_2pl" in df_master.columns and df_master["skor_konversi_2pl"].notna().any():
-        available_methods["Nilai Konversi (IRT - 2PL)"] = "skor_konversi_2pl"
-
-    if "skor_konversi_3pl" in df_master.columns and df_master["skor_konversi_3pl"].notna().any():
-        available_methods["Nilai Konversi (IRT - 3PL)"] = "skor_konversi_3pl"
-
-    # Fallback jika belum ada skor konversi
-    if not available_methods:
-        if "skor_mentah" in df_master.columns:
+        # 2. Pilihan Metode
+        available_methods = {}
+        if "skor_konversi_ctt" in df_cached_comp.columns:
+            available_methods["Nilai Konversi (Klasik/CTT)"] = "skor_konversi_ctt"
+        if "skor_konversi_rasch" in df_cached_comp.columns:
+            available_methods["Nilai Konversi (IRT - Rasch/1PL)"] = "skor_konversi_rasch"
+        if "skor_konversi_2pl" in df_cached_comp.columns:
+            available_methods["Nilai Konversi (IRT - 2PL)"] = "skor_konversi_2pl"
+        if "skor_konversi_3pl" in df_cached_comp.columns:
+            available_methods["Nilai Konversi (IRT - 3PL)"] = "skor_konversi_3pl"
+        if not available_methods and "skor_mentah" in df_cached_comp.columns:
             available_methods["Skor Mentah (Klasik/CTT)"] = "skor_mentah"
 
-    if not available_methods:
-        st.error("❌ Tidak ditemukan kolom nilai konversi yang dapat dianalisis.")
-        return
+        if not available_methods:
+            st.error("❌ Tidak ditemukan kolom nilai konversi yang dapat dianalisis.")
+            return
 
-    # --- 4. PILIHAN METODE ANALISIS ---
-    st.markdown("#### ⚙️ Pengaturan Metode Analisis")
-    selected_method_label = st.radio(
-        "Pilih Metode & Metrik Nilai yang Ingin Dianalisis:",
-        options=list(available_methods.keys()),
-        horizontal=True,
-        key="radio_sekolah_method",
-    )
-    selected_metric_col = available_methods[selected_method_label]
-
-    st.divider()
-
-    # --- 5. FILTER WILAYAH & JUMLAH PESERTA ---
-    st.markdown("#### 🔍 Filter Wilayah & Jumlah Peserta")
-    col_f1, col_f2 = st.columns(2)
-
-    prov_dict = {}
-
-    def clean_str(val):
-        if pd.isna(val):
-            return ""
-        return str(val).strip().rstrip(",").strip()
-
-    df_prov_pairs = df_master[["kode_provinsi", "nama_provinsi"]].dropna().drop_duplicates()
-    for _, row in df_prov_pairs.iterrows():
-        kd_raw = clean_str(row["kode_provinsi"])
-        if kd_raw == "-" or not kd_raw:
-            continue
-        kd_str = kd_raw.replace(".0", "").zfill(2)
-        nm_str = clean_str(row["nama_provinsi"]).upper()
-        if nm_str and nm_str != "-":
-            prov_dict[kd_str] = nm_str
-
-    prov_options = [f"{k} - {v}" for k, v in sorted(prov_dict.items())]
-
-    with col_f1:
-        selected_prov_options = st.multiselect(
-            "Filter Berdasarkan Provinsi (Kode - Nama Provinsi):",
-            options=prov_options,
-            default=[],
-            key="filter_provinsi_single",
-            placeholder="Semua Provinsi",
+        st.markdown("#### ⚙️ Pengaturan Metode Analisis")
+        selected_method_label = st.radio(
+            "Pilih Metode & Metrik Nilai yang Ingin Dianalisis:",
+            options=list(available_methods.keys()),
+            horizontal=True,
+            key="radio_sekolah_method",
         )
+        selected_metric_col = available_methods[selected_method_label]
+        st.divider()
 
-    with col_f2:
-        min_peserta = st.number_input(
-            "Minimal Jumlah Peserta:",
-            min_value=1,
-            value=1,
-            step=1,
-            key="filter_min_peserta",
-            help="Tampilkan hanya sekolah yang memiliki jumlah peserta minimal sejumlah angka ini.",
-        )
+        # 3. Filter Wilayah & Jumlah Peserta
+        st.markdown("#### 🔍 Filter Wilayah & Jumlah Peserta")
+        col_f1, col_f2 = st.columns(2)
 
-    if selected_prov_options:
-        selected_codes = [opt.split(" - ")[0].strip() for opt in selected_prov_options]
-        df_filtered_school["_kd_prop_clean"] = (
-            df_filtered_school["kode_provinsi"]
-            .astype(str)
-            .str.strip()
-            .str.replace(".0", "", regex=False)
-            .str.rstrip(",")
-            .str.zfill(2)
-        )
-        df_filtered_school = df_filtered_school[
-            df_filtered_school["_kd_prop_clean"].isin(selected_codes)
-        ]
+        prov_dict = {}
+        df_prov_pairs = df_cached_comp[["kode_provinsi", "nama_provinsi"]].dropna().drop_duplicates()
+        for _, row in df_prov_pairs.iterrows():
+            kd_raw = str(row["kode_provinsi"]).strip()
+            if kd_raw in ["-", "", "nan"]:
+                continue
+            kd_str = kd_raw.replace(".0", "").zfill(2)
+            nm_str = str(row["nama_provinsi"]).strip().upper()
+            if nm_str and nm_str not in ["-", "NAN"]:
+                prov_dict[kd_str] = nm_str
 
-    if df_filtered_school.empty:
-        st.warning("⚠️ Tidak ada data sekolah yang memenuhi kriteria filter provinsi yang dipilih.")
-        return
+        prov_options = [f"{k} - {v}" for k, v in sorted(prov_dict.items())]
 
-    df_filtered_school[selected_metric_col] = pd.to_numeric(df_filtered_school[selected_metric_col], errors="coerce")
-
-    # --- 6. AGREGASI DATA PER SEKOLAH (DENGAN KOMPOSIT SISWA) ---
-    id_user_col = "username" if "username" in df_filtered_school.columns else df_filtered_school.columns[0]
-    col_sek_kd = "kode_sekolah" if "kode_sekolah" in df_filtered_school.columns else "_school_key"
-    
-    group_cols = [col_sek_kd, "nama_sekolah"]
-    if "nama_kabupaten" in df_filtered_school.columns:
-        group_cols.append("nama_kabupaten")
-    if "nama_provinsi" in df_filtered_school.columns:
-        group_cols.append("nama_provinsi")
-
-    df_valid_scores = df_filtered_school.dropna(subset=[selected_metric_col]).copy()
-
-    # Kelompokkan per peserta terlebih dahulu untuk menghitung rerata komposit jika ada gabungan mapel
-    student_cols = [id_user_col, col_sek_kd, "nama_sekolah"]
-    if "nama_kabupaten" in df_valid_scores.columns:
-        student_cols.append("nama_kabupaten")
-    if "nama_provinsi" in df_valid_scores.columns:
-        student_cols.append("nama_provinsi")
-
-    df_student_composite = (
-        df_valid_scores.groupby(student_cols, as_index=False)
-        .agg({selected_metric_col: "mean"})
-    )
-
-    if df_student_composite.empty:
-        df_school_summary = (
-            df_filtered_school.groupby(group_cols, as_index=False)
-            .agg(
-                Jumlah_Peserta=(id_user_col, "nunique"),
-                Rata_Rata=(selected_metric_col, lambda x: 0.0),
-                Nilai_Min=(selected_metric_col, lambda x: 0.0),
-                Nilai_Max=(selected_metric_col, lambda x: 0.0),
-                Std_Deviasi=(selected_metric_col, lambda x: 0.0),
+        with col_f1:
+            selected_prov_options = st.multiselect(
+                "Filter Berdasarkan Provinsi (Kode - Nama Provinsi):",
+                options=prov_options,
+                default=[],
+                key="filter_provinsi_single",
+                placeholder="Semua Provinsi",
             )
-        )
+
+        with col_f2:
+            min_peserta = st.number_input(
+                "Minimal Jumlah Peserta:",
+                min_value=1,
+                value=1,
+                step=1,
+                key="filter_min_peserta",
+                help="Tampilkan hanya sekolah yang memiliki jumlah peserta minimal sejumlah angka ini.",
+            )
+
+        # 4. Agregasi Cepat Sub-Milidetik
+        if not available_mapels or len(selected_mapels) == len(available_mapels):
+            df_base_sch = df_cached_comp.copy()
+        elif len(selected_mapels) == 1 and df_cached_m is not None and not df_cached_m.empty and selected_metric_col in df_cached_m.columns:
+            df_base_sch = df_cached_m[df_cached_m["mapel"] == selected_mapels[0]].copy()
+        elif df_cached_m is not None and not df_cached_m.empty and selected_metric_col in df_cached_m.columns:
+            df_sub_m = df_cached_m[df_cached_m["mapel"].isin(selected_mapels)]
+            df_base_sch = df_sub_m.groupby(["kode_sekolah", "nama_sekolah", "nama_kabupaten", "nama_provinsi", "kode_provinsi"], as_index=False).agg({
+                "jumlah_peserta": "sum",
+                selected_metric_col: "mean"
+            })
+        else:
+            df_base_sch = df_cached_comp.copy()
+
+        if selected_prov_options:
+            selected_codes = [opt.split(" - ")[0].strip() for opt in selected_prov_options]
+            df_base_sch["_kd_prop_clean"] = df_base_sch["kode_provinsi"].astype(str).str.strip().str.replace(".0", "", regex=False).str.zfill(2)
+            df_base_sch = df_base_sch[df_base_sch["_kd_prop_clean"].isin(selected_codes)]
+
+        df_base_sch["Jumlah_Peserta"] = pd.to_numeric(df_base_sch.get("jumlah_peserta", df_base_sch.get("Jumlah_Peserta", 0)), errors="coerce").fillna(0).astype(int)
+        df_base_sch = df_base_sch[df_base_sch["Jumlah_Peserta"] >= min_peserta].copy()
+
+        df_school_summary = pd.DataFrame()
+        df_school_summary["kode_sekolah"] = df_base_sch["kode_sekolah"]
+        df_school_summary["nama_sekolah"] = df_base_sch["nama_sekolah"]
+        df_school_summary["nama_kabupaten"] = df_base_sch["nama_kabupaten"]
+        df_school_summary["nama_provinsi"] = df_base_sch["nama_provinsi"]
+        df_school_summary["Jumlah_Peserta"] = df_base_sch["Jumlah_Peserta"]
+        df_school_summary["Rata_Rata"] = pd.to_numeric(df_base_sch[selected_metric_col], errors="coerce").round(2)
+        df_school_summary["Nilai_Min"] = df_school_summary["Rata_Rata"]
+        df_school_summary["Nilai_Max"] = df_school_summary["Rata_Rata"]
+        df_school_summary["Std_Deviasi"] = 0.0
+        col_sek_kd = "kode_sekolah"
+
     else:
-        df_school_summary = (
-            df_student_composite.groupby(group_cols, as_index=False)
-            .agg(
-                Jumlah_Peserta=(id_user_col, "count"),
-                Rata_Rata=(selected_metric_col, "mean"),
-                Nilai_Min=(selected_metric_col, "min"),
-                Nilai_Max=(selected_metric_col, "max"),
-                Std_Deviasi=(selected_metric_col, "std"),
-            )
-        )
+        # --- JALUR CADANGAN: AMBIL DATA LENGKAP JIKA CACHE BELUM ADA ---
+        df_master = None
+        cand_df = st.session_state.get("df_peserta_skor")
+        if cand_df is None or cand_df.empty:
+            cand_df = df_matrix_school if (df_matrix_school is not None and not df_matrix_school.empty) else None
 
-    df_school_summary["Jumlah_Peserta"] = pd.to_numeric(df_school_summary["Jumlah_Peserta"], errors="coerce").fillna(0).astype(int)
-    df_school_summary = df_school_summary[
-        df_school_summary["Jumlah_Peserta"] >= min_peserta
-    ].copy()
+        if cand_df is not None and not cand_df.empty:
+            has_sch = any(c in cand_df.columns for c in ["nama_sekolah", "sekolah", "nama_lembaga", "kode_sekolah", "npsn", "_school_key"])
+            has_score = any(c in cand_df.columns for c in ["skor_konversi_ctt", "skor_mentah", "skor_konversi_rasch"])
+            if has_sch and has_score:
+                df_master = cand_df.copy()
+
+        if df_master is None or df_master.empty:
+            df_db = load_data_from_mysql()
+            if df_db is not None and not df_db.empty:
+                df_master = df_db.copy()
+            else:
+                st.info(
+                    "💡 **Informasi:** Berkas **Master Sekolah** (`sekolah`) belum diunggah atau "
+                    "data peserta belum diproses ke database MySQL."
+                )
+                return
+
+        if "kode_sekolah" not in df_master.columns:
+            for alt_k in ["npsn", "_school_key", "NPSN", "kode_lembaga"]:
+                if alt_k in df_master.columns:
+                    df_master["kode_sekolah"] = df_master[alt_k]
+                    break
+
+        if "nama_sekolah" not in df_master.columns:
+            for alt_n in ["sekolah", "nama_lembaga", "Nama_Sekolah", "NAMA_SEKOLAH"]:
+                if alt_n in df_master.columns:
+                    df_master["nama_sekolah"] = df_master[alt_n]
+                    break
+
+        df_master["kode_sekolah"] = df_master.get("kode_sekolah", df_master.get("_school_key", "-")).fillna("-").astype(str).str.strip()
+        df_master["nama_sekolah"] = df_master.get("nama_sekolah", df_master["kode_sekolah"]).fillna(df_master["kode_sekolah"]).astype(str).str.strip()
+        df_master["nama_kabupaten"] = df_master.get("nama_kabupaten", df_master.get("kabupaten", "-")).fillna("-").astype(str).str.strip()
+        df_master["nama_provinsi"] = df_master.get("nama_provinsi", df_master.get("provinsi", "-")).fillna("-").astype(str).str.strip()
+        df_master["kode_provinsi"] = df_master.get("kode_provinsi", df_master.get("kd_prop", "-")).fillna("-").astype(str).str.strip()
+
+        available_mapels = []
+        if "mapel" in df_master.columns:
+            available_mapels = sorted([
+                str(m).strip() for m in df_master["mapel"].dropna().unique()
+                if str(m).strip() not in ["", "nan", "None", "-"]
+            ])
+
+        df_filtered_school = df_master.copy()
+        if available_mapels:
+            st.markdown("#### 📚 Filter & Penggabungan Mata Pelajaran")
+            selected_mapels = st.multiselect(
+                "Pilih Mata Pelajaran (Bisa memilih lebih dari 1 untuk analisis gabungan):",
+                options=available_mapels,
+                default=available_mapels,
+                key="filter_school_mapel_multi",
+            )
+            if not selected_mapels:
+                st.warning("⚠️ Silakan pilih setidaknya satu mata pelajaran untuk dianalisis.")
+                return
+            df_filtered_school = df_filtered_school[df_filtered_school["mapel"].isin(selected_mapels)].copy()
+
+        available_methods = {}
+        if "skor_konversi_ctt" in df_master.columns:
+            available_methods["Nilai Konversi (Klasik/CTT)"] = "skor_konversi_ctt"
+        if "skor_konversi_rasch" in df_master.columns:
+            available_methods["Nilai Konversi (IRT - Rasch/1PL)"] = "skor_konversi_rasch"
+        if "skor_konversi_2pl" in df_master.columns:
+            available_methods["Nilai Konversi (IRT - 2PL)"] = "skor_konversi_2pl"
+        if "skor_konversi_3pl" in df_master.columns:
+            available_methods["Nilai Konversi (IRT - 3PL)"] = "skor_konversi_3pl"
+        if not available_methods and "skor_mentah" in df_master.columns:
+            available_methods["Skor Mentah (Klasik/CTT)"] = "skor_mentah"
+
+        if not available_methods:
+            st.error("❌ Tidak ditemukan kolom nilai konversi yang dapat dianalisis.")
+            return
+
+        st.markdown("#### ⚙️ Pengaturan Metode Analisis")
+        selected_method_label = st.radio(
+            "Pilih Metode & Metrik Nilai yang Ingin Dianalisis:",
+            options=list(available_methods.keys()),
+            horizontal=True,
+            key="radio_sekolah_method",
+        )
+        selected_metric_col = available_methods[selected_method_label]
+
+        st.markdown("#### 🔍 Filter Wilayah & Jumlah Peserta")
+        col_f1, col_f2 = st.columns(2)
+        prov_dict = {}
+        for _, row in df_master[["kode_provinsi", "nama_provinsi"]].dropna().drop_duplicates().iterrows():
+            kd_str = str(row["kode_provinsi"]).strip().replace(".0", "").zfill(2)
+            nm_str = str(row["nama_provinsi"]).strip().upper()
+            if kd_str not in ["-", ""] and nm_str not in ["-", ""]:
+                prov_dict[kd_str] = nm_str
+        prov_options = [f"{k} - {v}" for k, v in sorted(prov_dict.items())]
+
+        with col_f1:
+            selected_prov_options = st.multiselect(
+                "Filter Berdasarkan Provinsi (Kode - Nama Provinsi):",
+                options=prov_options,
+                default=[],
+                key="filter_provinsi_single",
+            )
+        with col_f2:
+            min_peserta = st.number_input(
+                "Minimal Jumlah Peserta:",
+                min_value=1,
+                value=1,
+                step=1,
+                key="filter_min_peserta",
+            )
+
+        if selected_prov_options:
+            selected_codes = [opt.split(" - ")[0].strip() for opt in selected_prov_options]
+            df_filtered_school["_kd_prop_clean"] = df_filtered_school["kode_provinsi"].astype(str).str.strip().str.replace(".0", "", regex=False).str.zfill(2)
+            df_filtered_school = df_filtered_school[df_filtered_school["_kd_prop_clean"].isin(selected_codes)]
+
+        df_filtered_school[selected_metric_col] = pd.to_numeric(df_filtered_school[selected_metric_col], errors="coerce")
+        id_user_col = "username" if "username" in df_filtered_school.columns else df_filtered_school.columns[0]
+        col_sek_kd = "kode_sekolah" if "kode_sekolah" in df_filtered_school.columns else "_school_key"
+        group_cols = [col_sek_kd, "nama_sekolah", "nama_kabupaten", "nama_provinsi"]
+
+        df_valid_scores = df_filtered_school.dropna(subset=[selected_metric_col]).copy()
+        student_cols = [id_user_col, col_sek_kd, "nama_sekolah", "nama_kabupaten", "nama_provinsi"]
+        df_student_composite = df_valid_scores.groupby(student_cols, as_index=False).agg({selected_metric_col: "mean"})
+        df_school_summary = df_student_composite.groupby(group_cols, as_index=False).agg(
+            Jumlah_Peserta=(id_user_col, "count"),
+            Rata_Rata=(selected_metric_col, "mean"),
+            Nilai_Min=(selected_metric_col, "min"),
+            Nilai_Max=(selected_metric_col, "max"),
+            Std_Deviasi=(selected_metric_col, "std"),
+        )
+        df_school_summary = df_school_summary[df_school_summary["Jumlah_Peserta"] >= min_peserta].copy()
 
     if df_school_summary.empty:
         st.warning(f"⚠️ Tidak ada sekolah yang memiliki jumlah peserta minimal {min_peserta}. Coba turunkan nilai filter minimal peserta.")

@@ -531,168 +531,226 @@ def render_tab_region(df_matrix_school, dfs):
     if "selected_geo_prov" not in st.session_state:
         st.session_state.selected_geo_prov = None
 
-    df_base = _get_region_df(df_matrix_school, dfs)
-    if df_base.empty:
-        st.warning(
-            "⚠️ Belum ada data peserta atau informasi wilayah"
-            " (Provinsi/Kabupaten) yang terdeteksi."
-        )
-        return
+    # --- JALUR CEPAT PRA-KOMPUTASI ANALITIK WILAYAH (INSTAN) ---
+    df_cached_prov = st.session_state.get("region_prov_summary")
+    df_cached_kab = st.session_state.get("region_kab_summary")
 
-    # 1. Pastikan kolom skor CTT tersedia di df_base
-    if "skor_konversi_ctt" in df_base.columns and df_base["skor_konversi_ctt"].notna().any():
-        df_base["Klasik / CTT (Skala 0-100)"] = pd.to_numeric(df_base["skor_konversi_ctt"], errors="coerce")
-    elif "skor_mentah" in df_base.columns:
-        vals = pd.to_numeric(df_base["skor_mentah"], errors="coerce")
-        n_soal = pd.to_numeric(df_base.get("Jumlah_Soal", 1), errors="coerce").fillna(1).clip(lower=1)
-        df_base["Klasik / CTT (Skala 0-100)"] = ((vals / n_soal) * 100.0).round(2)
+    if df_cached_prov is not None and not df_cached_prov.empty and df_cached_kab is not None and not df_cached_kab.empty:
+        available_metrics = list(df_cached_prov["metric"].dropna().unique())
+        available_mapels = [m for m in df_cached_prov["mapel"].dropna().unique() if m != "GABUNGAN"]
 
-    # 2. Pastikan kolom skor IRT tersedia di df_base
-    irt_results = st.session_state.get("irt_results", {})
-    for m_key in ["rasch", "1pl", "2pl", "3pl"]:
-        label_name = f"IRT {m_key.upper()} (Skala Konversi)"
-        col_db = f"skor_konversi_{m_key}"
-        if col_db in df_base.columns and df_base[col_db].notna().any():
-            df_base[label_name] = pd.to_numeric(df_base[col_db], errors="coerce")
-        elif m_key in irt_results and isinstance(irt_results[m_key], dict):
-            df_p = irt_results[m_key].get("df_person")
-            if df_p is not None and not df_p.empty:
-                df_p = df_p.copy()
-                u_col = next((c for c in df_p.columns if str(c).lower().strip() in ["username", "user_id", "id"]), df_p.columns[0])
-                df_p["username_clean"] = df_p[u_col].astype(str).str.strip().str.lower()
-                s_col = next((c for c in df_p.columns if str(c).lower().strip() in ["nilai konversi", "nilai_konversi", "skor_konversi", "nilai_scaled", "scaled_score", "skor_scaled"]), None)
-                if not s_col:
-                    num_cols = df_p.select_dtypes(include=[np.number]).columns
-                    for nc in num_cols:
-                        if str(nc).lower().strip() not in ["theta", "ability", "se", "se_theta", "se_ability", "z_score"]:
-                            if df_p[nc].max() > 10 or df_p[nc].min() < -5:
-                                s_col = nc
-                                break
-                if s_col:
-                    p_map = dict(zip(df_p["username_clean"], pd.to_numeric(df_p[s_col], errors="coerce")))
-                    df_base[label_name] = df_base["username_clean"].map(p_map)
+        col_sel1, col_sel2 = st.columns(2)
+        with col_sel1:
+            prev_idx = 0
+            if "selected_region_score_label" in st.session_state and st.session_state["selected_region_score_label"] in available_metrics:
+                prev_idx = available_metrics.index(st.session_state["selected_region_score_label"])
 
-    # Metrik skor yang valid
-    metric_candidates = [
-        "Klasik / CTT (Skala 0-100)",
-        "IRT RASCH (Skala Konversi)",
-        "IRT 1PL (Skala Konversi)",
-        "IRT 2PL (Skala Konversi)",
-        "IRT 3PL (Skala Konversi)",
-    ]
-    available_metrics = [m for m in metric_candidates if m in df_base.columns and df_base[m].notna().any()]
-
-    if not available_metrics:
-        st.info(
-            "💡 Belum ada data nilai konversi yang tersedia. Silakan jalankan"
-            " **Scoring Engine** atau **Analisis IRT** terlebih dahulu."
-        )
-        return
-
-    # Sinkronisasi nama mata pelajaran dengan tabel master mapel jika ada
-    mapel_lookup = {}
-    if dfs and isinstance(dfs, dict) and "mapel" in dfs and dfs["mapel"] is not None and not dfs["mapel"].empty:
-        mapel_lookup = get_mapel_lookup_dict(dfs["mapel"])
-    if not mapel_lookup:
-        mapel_lookup = st.session_state.get("mapel_dict", {})
-    if not mapel_lookup and "val_result" in st.session_state:
-        df_mpl_sess = st.session_state["val_result"].get("dataframes", {}).get("mapel")
-        if df_mpl_sess is not None and not df_mpl_sess.empty:
-            mapel_lookup = get_mapel_lookup_dict(df_mpl_sess)
-    if not mapel_lookup:
-        mapel_lookup = get_mapel_lookup_dict(None)
-
-    if "mapel" in df_base.columns and mapel_lookup:
-        df_base["mapel"] = df_base["mapel"].map(
-            lambda x: mapel_lookup.get(str(x).strip().upper(), mapel_lookup.get(str(x).strip(), str(x).strip()))
-        )
-
-    # Deteksi Mata Pelajaran yang tersedia
-    available_mapels = []
-    if "mapel" in df_base.columns:
-        available_mapels = sorted([
-            str(m).strip() for m in df_base["mapel"].dropna().unique()
-            if str(m).strip() not in ["", "nan", "None", "-"]
-        ])
-
-    col_sel1, col_sel2 = st.columns(2)
-    with col_sel1:
-        prev_idx = 0
-        if "selected_region_score_label" in st.session_state and st.session_state["selected_region_score_label"] in available_metrics:
-            prev_idx = available_metrics.index(st.session_state["selected_region_score_label"])
-
-        selected_score_label = st.selectbox(
-            "🎯 Pilih Metode Skor Konversi:",
-            options=available_metrics,
-            index=prev_idx,
-            key="tab6_score_dropdown",
-            help="Pilih model nilai konversi (skala 0-100) yang akan dianalisis distribusinya secara geografis.",
-        )
-        st.session_state["selected_region_score_label"] = selected_score_label
-
-    df_working = df_base.copy()
-
-    with col_sel2:
-        if available_mapels:
-            selected_mapels = st.multiselect(
-                "📚 Filter & Gabungan Mata Pelajaran:",
-                options=available_mapels,
-                default=available_mapels,
-                key="tab6_mapel_multiselect",
-                help="Pilih 1 atau beberapa mata pelajaran. Jika memilih lebih dari 1 (misal 3 mapel), nilai per peserta akan dihitung dari rerata gabungan sebelum dipetakan ke wilayah.",
+            selected_score_label = st.selectbox(
+                "🎯 Pilih Metode Skor Konversi:",
+                options=available_metrics,
+                index=prev_idx,
+                key="tab6_score_dropdown",
+                help="Pilih model nilai konversi (skala 0-100) yang akan dianalisis distribusinya secara geografis.",
             )
-            if not selected_mapels:
-                st.warning("⚠️ Silakan pilih setidaknya satu mata pelajaran untuk dianalisis.")
-                return
-            df_working = df_working[df_working["mapel"].isin(selected_mapels)].copy()
+            st.session_state["selected_region_score_label"] = selected_score_label
+
+        with col_sel2:
+            if available_mapels:
+                selected_mapels = st.multiselect(
+                    "📚 Filter & Gabungan Mata Pelajaran:",
+                    options=available_mapels,
+                    default=available_mapels,
+                    key="tab6_mapel_multiselect",
+                    help="Pilih 1 atau beberapa mata pelajaran. Jika memilih lebih dari 1 (misal 3 mapel), nilai per peserta akan dihitung dari rerata gabungan sebelum dipetakan ke wilayah.",
+                )
+                if not selected_mapels:
+                    st.warning("⚠️ Silakan pilih setidaknya satu mata pelajaran untuk dianalisis.")
+                    return
+            else:
+                selected_mapels = []
+
+        if available_mapels and len(selected_mapels) > 1:
+            st.info(f"✨ **Analisis Wilayah Gabungan ({len(selected_mapels)} Mapel):** {', '.join(selected_mapels)}. Statistik provinsi, peta, dan ranking dihitung dari nilai gabungan rata-rata peserta.")
+        elif available_mapels and len(selected_mapels) == 1:
+            st.caption(f"📌 **Mata Pelajaran Aktif:** {selected_mapels[0]}")
+
+        # Ambil subset data terkomputasi
+        if not available_mapels or len(selected_mapels) == len(available_mapels):
+            stats_prov = df_cached_prov[(df_cached_prov["mapel"] == "GABUNGAN") & (df_cached_prov["metric"] == selected_score_label)].copy()
+            stats_kab = df_cached_kab[(df_cached_kab["mapel"] == "GABUNGAN") & (df_cached_kab["metric"] == selected_score_label)].copy()
+        elif len(selected_mapels) == 1:
+            stats_prov = df_cached_prov[(df_cached_prov["mapel"] == selected_mapels[0]) & (df_cached_prov["metric"] == selected_score_label)].copy()
+            stats_kab = df_cached_kab[(df_cached_kab["mapel"] == selected_mapels[0]) & (df_cached_kab["metric"] == selected_score_label)].copy()
         else:
-            selected_mapels = []
+            p_sub = df_cached_prov[(df_cached_prov["mapel"].isin(selected_mapels)) & (df_cached_prov["metric"] == selected_score_label)]
+            stats_prov = p_sub.groupby(["kode_provinsi", "nama_provinsi"], as_index=False).agg({
+                "Jumlah_Peserta": "sum", "Rata_Rata": "mean", "SD": "mean", "Min": "min", "Q1": "mean", "Median": "mean", "Q3": "mean", "Max": "max"
+            })
+            k_sub = df_cached_kab[(df_cached_kab["mapel"].isin(selected_mapels)) & (df_cached_kab["metric"] == selected_score_label)]
+            stats_kab = k_sub.groupby(["kode_provinsi", "nama_provinsi", "nama_kabupaten"], as_index=False).agg({
+                "Jumlah_Peserta": "sum", "Rata_Rata": "mean", "SD": "mean", "Min": "min", "Q1": "mean", "Median": "mean", "Q3": "mean", "Max": "max"
+            })
 
-    if available_mapels and len(selected_mapels) > 1:
-        st.info(f"✨ **Analisis Wilayah Gabungan ({len(selected_mapels)} Mapel):** {', '.join(selected_mapels)}. Statistik provinsi, peta, dan ranking dihitung dari nilai gabungan rata-rata peserta.")
-    elif available_mapels and len(selected_mapels) == 1:
-        st.caption(f"📌 **Mata Pelajaran Aktif:** {selected_mapels[0]}")
+        num_cols = ["Rata_Rata", "SD", "Min", "Q1", "Median", "Q3", "Max"]
+        for nc in num_cols:
+            if nc in stats_prov.columns:
+                stats_prov[nc] = stats_prov[nc].round(2)
+            if nc in stats_kab.columns:
+                stats_kab[nc] = stats_kab[nc].round(2)
 
-    val_col_name = selected_score_label
-    df_working[val_col_name] = pd.to_numeric(df_working[val_col_name], errors="coerce")
-    df_valid = df_working.dropna(subset=[val_col_name]).copy()
+        stats_prov = stats_prov.sort_values(by="Rata_Rata", ascending=False)
+        stats_kab = stats_kab.sort_values(by="Rata_Rata", ascending=False)
 
-    if df_valid.empty:
-        st.error("❌ Tidak ada data skor valid untuk mata pelajaran dan metode yang dipilih.")
-        return
+        total_peserta = int(stats_prov["Jumlah_Peserta"].sum())
+        avg_nat = float((stats_prov["Rata_Rata"] * stats_prov["Jumlah_Peserta"]).sum() / max(total_peserta, 1))
+        std_val = float(stats_prov["SD"].mean())
 
-    # Kelompokkan per peserta terlebih dahulu untuk menghitung nilai rerata komposit gabungan mapel
-    group_student_cols = ["username_clean", "kode_provinsi", "nama_provinsi", "nama_kabupaten"]
-    for c_extra in ["nama_provinsi_singkat", "nama_singkat", "singkatan"]:
-        if c_extra in df_valid.columns and c_extra not in group_student_cols:
-            group_student_cols.append(c_extra)
+        top_prov = stats_prov.iloc[0] if not stats_prov.empty else None
+        bot_prov = stats_prov.iloc[-1] if not stats_prov.empty else None
+        disparitas_val = (top_prov["Rata_Rata"] - bot_prov["Rata_Rata"]) if (top_prov is not None and bot_prov is not None) else 0.0
 
-    df_merged = (
-        df_valid.groupby(group_student_cols, as_index=False)
-        .agg({val_col_name: "mean"})
-    )
-
-    if df_merged.empty:
-        st.error(
-            "❌ Tidak dapat mengaitkan data skor peserta dengan data wilayah."
+        st.divider()
+        st.markdown("### 🇮🇩 1. Ringkasan & Kesenjangan (Gap) Statistik Nasional")
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Total Peserta Terjangkau", f"{total_peserta:,}".replace(",", "."))
+        m2.metric("Rata-Rata Nasional (Konversi)", f"{avg_nat:.2f}")
+        m3.metric("Standar Deviasi", f"{std_val:.2f}")
+        m4.metric(
+            "Disparitas",
+            f"{disparitas_val:.2f} Poin",
+            delta=(f"Tertinggi: {top_prov['Rata_Rata']:.2f} | Terendah: {bot_prov['Rata_Rata']:.2f}" if top_prov is not None else None),
+            delta_color="off",
         )
-        return
+        df_merged = stats_prov
+    else:
+        df_base = _get_region_df(df_matrix_school, dfs)
+        if df_base.empty:
+            st.warning(
+                "⚠️ Belum ada data peserta atau informasi wilayah"
+                " (Provinsi/Kabupaten) yang terdeteksi."
+            )
+            return
 
-    st.divider()
+        # 1. Pastikan kolom skor CTT tersedia di df_base
+        if "skor_konversi_ctt" in df_base.columns and df_base["skor_konversi_ctt"].notna().any():
+            df_base["Klasik / CTT (Skala 0-100)"] = pd.to_numeric(df_base["skor_konversi_ctt"], errors="coerce")
+        elif "skor_mentah" in df_base.columns:
+            vals = pd.to_numeric(df_base["skor_mentah"], errors="coerce")
+            n_soal = pd.to_numeric(df_base.get("Jumlah_Soal", 1), errors="coerce").fillna(1).clip(lower=1)
+            df_base["Klasik / CTT (Skala 0-100)"] = ((vals / n_soal) * 100.0).round(2)
 
-    st.markdown("### 🇮🇩 1. Ringkasan & Kesenjangan (Gap) Statistik Nasional")
+        # 2. Pastikan kolom skor IRT tersedia di df_base
+        irt_results = st.session_state.get("irt_results", {})
+        for m_key in ["rasch", "1pl", "2pl", "3pl"]:
+            label_name = f"IRT {m_key.upper()} (Skala Konversi)"
+            col_db = f"skor_konversi_{m_key}"
+            if col_db in df_base.columns and df_base[col_db].notna().any():
+                df_base[label_name] = pd.to_numeric(df_base[col_db], errors="coerce")
+            elif m_key in irt_results and isinstance(irt_results[m_key], dict):
+                df_p = irt_results[m_key].get("df_person")
+                if df_p is not None and not df_p.empty:
+                    df_p = df_p.copy()
+                    u_col = next((c for c in df_p.columns if str(c).lower().strip() in ["username", "user_id", "id"]), df_p.columns[0])
+                    df_p["username_clean"] = df_p[u_col].astype(str).str.strip().str.lower()
+                    s_col = next((c for c in df_p.columns if str(c).lower().strip() in ["nilai konversi", "nilai_konversi", "skor_konversi", "nilai_scaled", "scaled_score", "skor_scaled"]), None)
+                    if s_col:
+                        p_map = dict(zip(df_p["username_clean"], pd.to_numeric(df_p[s_col], errors="coerce")))
+                        df_base[label_name] = df_base["username_clean"].map(p_map)
 
-    avg_nat = df_merged[val_col_name].mean()
-    total_peserta = len(df_merged)
+        metric_candidates = [
+            "Klasik / CTT (Skala 0-100)",
+            "IRT RASCH (Skala Konversi)",
+            "IRT 1PL (Skala Konversi)",
+            "IRT 2PL (Skala Konversi)",
+            "IRT 3PL (Skala Konversi)",
+        ]
+        available_metrics = [m for m in metric_candidates if m in df_base.columns and df_base[m].notna().any()]
 
-    stats_prov = _calculate_region_stats(
-        df_merged, "nama_provinsi", val_col_name
-    )
+        if not available_metrics:
+            st.info("💡 Belum ada data nilai konversi yang tersedia.")
+            return
 
-    if not stats_prov.empty:
-        std_val = df_merged[val_col_name].std()
-        top_prov = stats_prov.iloc[0]
-        bot_prov = stats_prov.iloc[-1]
+        mapel_lookup = {}
+        if dfs and isinstance(dfs, dict) and "mapel" in dfs and dfs["mapel"] is not None and not dfs["mapel"].empty:
+            mapel_lookup = get_mapel_lookup_dict(dfs["mapel"])
+        if not mapel_lookup:
+            mapel_lookup = st.session_state.get("mapel_dict", {})
+        if not mapel_lookup:
+            mapel_lookup = get_mapel_lookup_dict(None)
+
+        if "mapel" in df_base.columns and mapel_lookup:
+            df_base["mapel"] = df_base["mapel"].map(
+                lambda x: mapel_lookup.get(str(x).strip().upper(), mapel_lookup.get(str(x).strip(), str(x).strip()))
+            )
+
+        available_mapels = []
+        if "mapel" in df_base.columns:
+            available_mapels = sorted([
+                str(m).strip() for m in df_base["mapel"].dropna().unique()
+                if str(m).strip() not in ["", "nan", "None", "-"]
+            ])
+
+        col_sel1, col_sel2 = st.columns(2)
+        with col_sel1:
+            prev_idx = 0
+            if "selected_region_score_label" in st.session_state and st.session_state["selected_region_score_label"] in available_metrics:
+                prev_idx = available_metrics.index(st.session_state["selected_region_score_label"])
+
+            selected_score_label = st.selectbox(
+                "🎯 Pilih Metode Skor Konversi:",
+                options=available_metrics,
+                index=prev_idx,
+                key="tab6_score_dropdown",
+            )
+            st.session_state["selected_region_score_label"] = selected_score_label
+
+        df_working = df_base.copy()
+
+        with col_sel2:
+            if available_mapels:
+                selected_mapels = st.multiselect(
+                    "📚 Filter & Gabungan Mata Pelajaran:",
+                    options=available_mapels,
+                    default=available_mapels,
+                    key="tab6_mapel_multiselect",
+                )
+                if not selected_mapels:
+                    st.warning("⚠️ Silakan pilih setidaknya satu mata pelajaran untuk dianalisis.")
+                    return
+                df_working = df_working[df_working["mapel"].isin(selected_mapels)].copy()
+            else:
+                selected_mapels = []
+
+        val_col_name = selected_score_label
+        df_working[val_col_name] = pd.to_numeric(df_working[val_col_name], errors="coerce")
+        df_valid = df_working.dropna(subset=[val_col_name]).copy()
+
+        if df_valid.empty:
+            st.error("❌ Tidak ada data skor valid.")
+            return
+
+        group_student_cols = ["username_clean", "kode_provinsi", "nama_provinsi", "nama_kabupaten"]
+        df_merged = df_valid.groupby(group_student_cols, as_index=False).agg({val_col_name: "mean"})
+
+        st.divider()
+        st.markdown("### 🇮🇩 1. Ringkasan & Kesenjangan (Gap) Statistik Nasional")
+
+        avg_nat = df_merged[val_col_name].mean()
+        total_peserta = len(df_merged)
+        stats_prov = _calculate_region_stats(df_merged, "nama_provinsi", val_col_name)
+
+        if not stats_prov.empty:
+            std_val = df_merged[val_col_name].std()
+            top_prov = stats_prov.iloc[0]
+            bot_prov = stats_prov.iloc[-1]
+            disparitas_val = top_prov["Rata_Rata"] - bot_prov["Rata_Rata"]
+
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Total Peserta Terjangkau", f"{total_peserta:,}".replace(",", "."))
+            m2.metric("Rata-Rata Nasional (Konversi)", f"{avg_nat:.2f}")
+            m3.metric("Standar Deviasi", f"{std_val:.2f}")
+            m4.metric("Disparitas", f"{disparitas_val:.2f} Poin", delta=f"Tertinggi: {top_prov['Rata_Rata']:.2f} | Terendah: {bot_prov['Rata_Rata']:.2f}", delta_color="off")
+
         disparitas_val = top_prov["Rata_Rata"] - bot_prov["Rata_Rata"]
 
         m1, m2, m3, m4 = st.columns(4)
@@ -976,10 +1034,13 @@ def render_tab_region(df_matrix_school, dfs):
             f"📍 **Peta Detail Kabupaten/Kota di Provinsi {target_prov}**"
         )
 
-        df_prov_kab = df_merged[df_merged["nama_provinsi"] == target_prov]
-        stats_kab_local = _calculate_region_stats(
-            df_prov_kab, "nama_kabupaten", val_col_name
-        )
+        if "stats_kab" in locals() and stats_kab is not None and not stats_kab.empty:
+            stats_kab_local = stats_kab[stats_kab["nama_provinsi"] == target_prov].copy()
+        else:
+            df_prov_kab = df_merged[df_merged["nama_provinsi"] == target_prov]
+            stats_kab_local = _calculate_region_stats(
+                df_prov_kab, "nama_kabupaten", val_col_name
+            )
 
         geojson_kab = _load_geojson_kabupaten()
         kab_map = get_kode_kabupaten_map()
@@ -1275,14 +1336,17 @@ def render_tab_region(df_matrix_school, dfs):
             "Pilih Provinsi untuk Detail Kabupaten/Kota:", options=list_prov
         )
 
-        df_sub_kab = df_merged[df_merged["nama_provinsi"] == selected_prov]
-        stats_kab_sub = _calculate_region_stats(
-            df_sub_kab, "nama_kabupaten", val_col_name
-        )
+        if "stats_kab" in locals() and stats_kab is not None and not stats_kab.empty:
+            stats_kab_sub = stats_kab[stats_kab["nama_provinsi"] == selected_prov].copy()
+            avg_sub_prov = float(stats_kab_sub["Rata_Rata"].mean()) if not stats_kab_sub.empty else 0.0
+        else:
+            df_sub_kab = df_merged[df_merged["nama_provinsi"] == selected_prov]
+            stats_kab_sub = _calculate_region_stats(
+                df_sub_kab, "nama_kabupaten", val_col_name
+            )
+            avg_sub_prov = df_sub_kab[val_col_name].mean() if not df_sub_kab.empty else 0.0
 
         if not stats_kab_sub.empty:
-            avg_sub_prov = df_sub_kab[val_col_name].mean()
-
             fig_kab_sub = px.bar(
                 stats_kab_sub,
                 x="nama_kabupaten",
@@ -1319,9 +1383,12 @@ def render_tab_region(df_matrix_school, dfs):
             )
 
     with tab_kab2:
-        stats_kab_nat = _calculate_region_stats(
-            df_merged, "nama_kabupaten", val_col_name
-        )
+        if "stats_kab" in locals() and stats_kab is not None and not stats_kab.empty:
+            stats_kab_nat = stats_kab.copy()
+        else:
+            stats_kab_nat = _calculate_region_stats(
+                df_merged, "nama_kabupaten", val_col_name
+            )
 
         st.caption("Menampilkan 30 Kabupaten/Kota dengan capaian tertinggi:")
         fig_kab_nat = px.bar(
@@ -1373,9 +1440,7 @@ def render_tab_region(df_matrix_school, dfs):
             use_container_width=True,
         )
     with c_dl2:
-        stats_kab_all = _calculate_region_stats(
-            df_merged, "nama_kabupaten", val_col_name
-        )
+        stats_kab_all = stats_kab if ("stats_kab" in locals() and stats_kab is not None and not stats_kab.empty) else _calculate_region_stats(df_merged, "nama_kabupaten", val_col_name)
         csv_kab = convert_df_to_csv_bytes(stats_kab_all)
         st.download_button(
             "📄 Unduh CSV Statistik Kabupaten/Kota",

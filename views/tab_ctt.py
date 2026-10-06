@@ -86,24 +86,6 @@ def render_tab_ctt(ctt_res, df_matrix=None, dfs=None):
             )
             df_items = df_items[df_items[mapel_col] == selected_mapel].copy()
 
-            if df_matrix is not None and not df_matrix.empty:
-                mat_m_col = next(
-                    (
-                        c
-                        for c in df_matrix.columns
-                        if c.lower()
-                        in ["mapel", "mata_pelajaran", "mata pelajaran", "subject", "paket"]
-                    ),
-                    None,
-                )
-                if mat_m_col:
-                    m_norm = df_matrix[mat_m_col].map(
-                        lambda x: mapel_lookup.get(
-                            str(x).strip().upper(),
-                            mapel_lookup.get(str(x).strip(), str(x).strip()),
-                        )
-                    )
-                    df_matrix = df_matrix[m_norm == selected_mapel].copy()
 
     p_col = next(
         (
@@ -215,7 +197,39 @@ def render_tab_ctt(ctt_res, df_matrix=None, dfs=None):
 
     with col_desc1:
         st.markdown("#### 1. Ringkasan Nilai Konversi Peserta")
-        if df_matrix is not None and konversi_col is not None:
+        cached_s = st.session_state.get("ctt_summary_precomputed", {}).get(
+            selected_mapel if "selected_mapel" in locals() else "ALL",
+            st.session_state.get("ctt_summary_precomputed", {}).get("ALL")
+        )
+        if cached_s:
+            conv_stats = {
+                "Metrik Statistik": [
+                    "Jumlah Peserta (N)",
+                    "Rata-rata Skor (Mean)",
+                    "Standar Deviasi (SD)",
+                    "Skor Minimum",
+                    "Kuartil 1 (Q1 - 25%)",
+                    "Median (Q2 - 50%)",
+                    "Kuartil 3 (Q3 - 75%)",
+                    "Skor Maksimum",
+                    "Kemiringan (Skewness)",
+                    "Keruncingan (Kurtosis)",
+                ],
+                "Nilai": [
+                    f"{cached_s['N']:,}".replace(",", "."),
+                    f"{cached_s['Mean']:.2f}",
+                    f"{cached_s['SD']:.2f}",
+                    f"{cached_s['Min']:.2f}",
+                    f"{cached_s['Q1']:.2f}",
+                    f"{cached_s['Median']:.2f}",
+                    f"{cached_s['Q3']:.2f}",
+                    f"{cached_s['Max']:.2f}",
+                    f"{cached_s['Skew']:.3f}",
+                    f"{cached_s['Kurt']:.3f}",
+                ],
+            }
+            st.dataframe(pd.DataFrame(conv_stats), use_container_width=True, hide_index=True)
+        elif df_matrix is not None and konversi_col is not None:
             conv_scores = pd.to_numeric(df_matrix[konversi_col], errors="coerce").dropna()
             if not conv_scores.empty:
                 q1_val = conv_scores.quantile(0.25)
@@ -238,7 +252,7 @@ def render_tab_ctt(ctt_res, df_matrix=None, dfs=None):
                         "Keruncingan (Kurtosis)",
                     ],
                     "Nilai": [
-                        f"{len(conv_scores):,}",
+                        f"{len(conv_scores):,}".replace(",", "."),
                         f"{conv_scores.mean():.2f}",
                         f"{conv_scores.std():.2f}" if len(conv_scores) > 1 else "0.00",
                         f"{conv_scores.min():.2f}",
