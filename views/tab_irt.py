@@ -8,7 +8,7 @@ from equating import perform_multi_session_equating, run_cached_session_irt
 from excel_exporter import convert_df_to_csv_bytes, create_excel_report
 from irt_analysis import run_irt_analysis
 from scoring import calculate_person_fit
-from db_helper import prepare_and_save_analysis, update_irt_model_in_db
+from db_helper import update_irt_model_in_db
 from ui_components import render_irt_icc, render_irt_tif, render_wright_map
 from validators import get_mapel_lookup_dict
 
@@ -181,7 +181,7 @@ def render_tab_irt(df_matrix, dfs, ctt_res):
                         available_irt_mapels.append(val_norm)
 
     # B. Cek dari ctt_res item_stats
-    if not available_irt_mapels and ctt_res and isinstance(ctt_res, dict) and "item_stats" in ctt_res and ctt_res["item_stats"] is not None:
+    if ctt_res and isinstance(ctt_res, dict) and "item_stats" in ctt_res and ctt_res["item_stats"] is not None:
         df_is = ctt_res["item_stats"]
         c_m = next((c for c in df_is.columns if str(c).strip().lower() in ["mapel", "mata_pelajaran", "mata pelajaran", "subject", "paket"]), None)
         if c_m:
@@ -193,7 +193,7 @@ def render_tab_irt(df_matrix, dfs, ctt_res):
                         available_irt_mapels.append(val_norm)
 
     # C. Cek dari df_peserta_skor
-    if not available_irt_mapels and st.session_state.get("df_peserta_skor") is not None:
+    if st.session_state.get("df_peserta_skor") is not None:
         df_ps = st.session_state["df_peserta_skor"]
         if "mapel" in df_ps.columns:
             for val in df_ps["mapel"].dropna().unique():
@@ -204,7 +204,7 @@ def render_tab_irt(df_matrix, dfs, ctt_res):
                         available_irt_mapels.append(val_norm)
 
     # D. Cek dari df_matrix
-    if not available_irt_mapels and df_matrix is not None and not df_matrix.empty:
+    if df_matrix is not None and not df_matrix.empty:
         c_m = next((c for c in df_matrix.columns if str(c).strip().lower() in ["mapel", "mata_pelajaran", "mata pelajaran", "subject", "paket"]), None)
         if c_m:
             for val in df_matrix[c_m].dropna().unique():
@@ -213,6 +213,24 @@ def render_tab_irt(df_matrix, dfs, ctt_res):
                     val_norm = mapel_lookup.get(val_s.upper(), mapel_lookup.get(val_s, val_s))
                     if val_norm not in available_irt_mapels:
                         available_irt_mapels.append(val_norm)
+
+    # E. Cek dari tb_peserta_skor langsung di database jika belum lengkap
+    if len(available_irt_mapels) < 2:
+        try:
+            from db_helper import get_db_connection
+            from sqlalchemy import text
+            eng = get_db_connection()
+            if eng is not None:
+                with eng.connect() as conn:
+                    rows = conn.execute(text("SELECT DISTINCT mapel FROM tb_peserta_skor;")).fetchall()
+                    for r in rows:
+                        if r[0]:
+                            v_s = str(r[0]).strip()
+                            v_norm = mapel_lookup.get(v_s.upper(), mapel_lookup.get(v_s, v_s))
+                            if v_norm not in available_irt_mapels:
+                                available_irt_mapels.append(v_norm)
+        except Exception:
+            pass
 
     available_irt_mapels = sorted(list(set(available_irt_mapels)))
 
@@ -369,29 +387,62 @@ def render_tab_irt(df_matrix, dfs, ctt_res):
 
     # Filter data butir dan peserta berdasarkan mata pelajaran yang dipilih
     if selected_irt_mapel:
-        if not df_params.empty and "mapel" in df_params.columns and (df_params["mapel"] == selected_irt_mapel).any():
-            df_params = df_params[df_params["mapel"] == selected_irt_mapel].copy()
-
-        df_sess_p = st.session_state.get("df_peserta_skor")
-        if df_sess_p is not None and not df_sess_p.empty and "mapel" in df_sess_p.columns:
-            norm_mapel_p = df_sess_p["mapel"].map(
+        # A. Filter parameter butir soal (item_params)
+        col_m_params = next(
+            (c for c in df_params.columns if c.lower() in ["mapel", "mata_pelajaran", "mata pelajaran", "subject", "paket"]),
+            None,
+        )
+        if col_m_params and not df_params.empty:
+            norm_m_params = df_params[col_m_params].map(
                 lambda x: mapel_lookup.get(str(x).strip().upper(), mapel_lookup.get(str(x).strip(), str(x).strip()))
             )
-            users_mapel = set(df_sess_p[norm_mapel_p == selected_irt_mapel]["username"].astype(str).str.strip().str.lower())
-            if users_mapel and not df_persons_raw.empty:
-                usr_p_col = df_persons_raw.columns[0]
-                df_persons_raw = df_persons_raw[df_persons_raw[usr_p_col].astype(str).str.strip().str.lower().isin(users_mapel)].copy()
-        elif df_matrix is not None and "mapel" in df_matrix.columns:
-            usr_m_col = df_matrix.columns[0]
-            norm_mapel_m = df_matrix["mapel"].map(
+            if (norm_m_params == selected_irt_mapel).any():
+                df_params = df_params[norm_m_params == selected_irt_mapel].copy()
+
+        # B. Filter data person (person_params)
+        col_m_persons = next(
+            (c for c in df_persons_raw.columns if c.lower() in ["mapel", "mata_pelajaran", "mata pelajaran", "subject", "paket"]),
+            None,
+        )
+        if col_m_persons and not df_persons_raw.empty:
+            norm_m_p = df_persons_raw[col_m_persons].map(
                 lambda x: mapel_lookup.get(str(x).strip().upper(), mapel_lookup.get(str(x).strip(), str(x).strip()))
             )
-            users_mapel = set(df_matrix[norm_mapel_m == selected_irt_mapel][usr_m_col].astype(str).str.strip().str.lower())
-            if users_mapel and not df_persons_raw.empty:
-                usr_p_col = df_persons_raw.columns[0]
-                df_persons_raw = df_persons_raw[df_persons_raw[usr_p_col].astype(str).str.strip().str.lower().isin(users_mapel)].copy()
+            df_persons_raw = df_persons_raw[norm_m_p == selected_irt_mapel].copy()
+        else:
+            df_ref = st.session_state.get("df_peserta_skor")
+            if df_ref is None or df_ref.empty:
+                df_ref = df_matrix
 
-    n_total_pop = len(df_persons_raw) if not df_persons_raw.empty else cache_data.get("n_total", len(df_matrix))
+            if df_ref is not None and not df_ref.empty and "mapel" in df_ref.columns:
+                norm_m_ref = df_ref["mapel"].map(
+                    lambda x: mapel_lookup.get(str(x).strip().upper(), mapel_lookup.get(str(x).strip(), str(x).strip()))
+                )
+                mask_ref = (norm_m_ref == selected_irt_mapel)
+
+                if len(df_persons_raw) == len(df_ref):
+                    df_persons_raw = df_persons_raw[mask_ref.values].copy()
+                else:
+                    ref_sub = df_ref[mask_ref]
+                    usr_col_ref = next((c for c in ref_sub.columns if c.lower() in ["username", "user_id", "id_peserta"]), ref_sub.columns[0])
+                    valid_users = set(ref_sub[usr_col_ref].astype(str).str.strip().str.lower())
+                    usr_p_col = df_persons_raw.columns[0]
+                    df_persons_raw = df_persons_raw[df_persons_raw[usr_p_col].astype(str).str.strip().str.lower().isin(valid_users)].copy()
+
+    # Hitung N_total tepat untuk mata pelajaran yang dipilih
+    df_pop_ref = st.session_state.get("df_peserta_skor")
+    if df_pop_ref is None or df_pop_ref.empty:
+        df_pop_ref = df_matrix
+
+    n_total_pop = len(df_persons_raw)
+    if selected_irt_mapel and df_pop_ref is not None and not df_pop_ref.empty and "mapel" in df_pop_ref.columns:
+        norm_pop_m = df_pop_ref["mapel"].map(
+            lambda x: mapel_lookup.get(str(x).strip().upper(), mapel_lookup.get(str(x).strip(), str(x).strip()))
+        )
+        n_m_cnt = int((norm_pop_m == selected_irt_mapel).sum())
+        if n_m_cnt > 0:
+            n_total_pop = n_m_cnt
+
     n_sample_pop = len(df_persons_raw)
 
     irt_res = {"person_params": df_persons_raw, "item_params": df_params}
@@ -650,6 +701,11 @@ def render_tab_irt(df_matrix, dfs, ctt_res):
         st.markdown("#### 📊 Statistik Deskriptif Estimasi Ability (Theta θ)")
 
         theta_vals = pd.to_numeric(df_persons[theta_col], errors="coerce").dropna()
+        if not theta_vals.empty and theta_vals.abs().max() > 20.0:
+            m_s = float(st.session_state.get("cfg_mean_scale", 500.0))
+            s_s = float(st.session_state.get("cfg_sd_scale", 100.0))
+            theta_vals = ((theta_vals - m_s) / max(s_s, 1e-5)).round(3)
+
         scaled_vals = (
             pd.to_numeric(df_persons["Nilai_Scaled"], errors="coerce").dropna()
             if "Nilai_Scaled" in df_persons.columns

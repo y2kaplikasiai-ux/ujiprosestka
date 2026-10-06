@@ -5,47 +5,56 @@ import plotly.express as px
 import plotly.graph_objects as go
 
 
-def render_score_histogram(df_matrix):
-    """Menampilkan histogram distribusi nilai konversi (skala 0 - 100)."""
+def render_score_histogram(df_matrix, col_type="skor_mentah"):
+    """Menampilkan histogram distribusi skor mentah peserta."""
     df = df_matrix.copy()
 
-    # Deteksi kolom nilai konversi
+    # Deteksi kolom target sesuai col_type
     target_col = None
-    for col in df.columns:
-        if col.lower() in [
-            "nilai_konversi",
-            "nilaikonversi",
-            "nilai_persen",
-            "nilai",
-        ]:
-            target_col = col
-            break
-
-    if target_col is None:
-        # Jika tidak ada, cari skor mentah
+    if col_type == "skor_mentah":
         for col in df.columns:
             if col.lower() in ["skor_mentah", "skor_total", "skormentah", "skor"]:
                 target_col = col
                 break
+        if target_col is None:
+            for col in df.columns:
+                if col.lower() in ["nilai_konversi", "nilaikonversi", "nilai_persen", "nilai"]:
+                    target_col = col
+                    break
+    else:
+        for col in df.columns:
+            if col.lower() in ["nilai_konversi", "nilaikonversi", "nilai_persen", "nilai"]:
+                target_col = col
+                break
+        if target_col is None:
+            for col in df.columns:
+                if col.lower() in ["skor_mentah", "skor_total", "skormentah", "skor"]:
+                    target_col = col
+                    break
 
     if target_col is None:
         target_col = df.columns[-1]
 
-    # Proteksi Tambahan: Jika nilai maksimal <= 1, kalikan 100
-    if df[target_col].max() <= 1.0:
+    is_raw = "mentah" in target_col.lower() or target_col.lower() in ["skor", "skor_total"]
+    
+    # Hanya konversi jika desimal proporsi 0-1 pada nilai non-skor mentah
+    if not is_raw and df[target_col].max() <= 1.0:
         df[target_col] = df[target_col] * 100
+
+    x_title = "Skor Mentah" if is_raw else "Nilai Konversi"
+    chart_title = f"Distribusi {x_title} Peserta"
 
     fig = px.histogram(
         df,
         x=target_col,
-        nbins=20,
-        title="Distribusi Nilai Konversi Peserta (Skala 0 - 100)",
-        labels={target_col: "Nilai Konversi"},
+        nbins=25,
+        title=f"<b>{chart_title}</b>",
+        labels={target_col: x_title},
         color_discrete_sequence=["#2b5c8f"],
     )
 
     fig.update_layout(
-        xaxis_title="Nilai Konversi",
+        xaxis_title=x_title,
         yaxis_title="Jumlah Peserta",
         template="plotly_white",
         margin=dict(l=20, r=20, t=40, b=20),

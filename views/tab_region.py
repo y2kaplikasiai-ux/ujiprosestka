@@ -719,7 +719,7 @@ def render_tab_region(df_matrix_school, dfs):
         p for p in df_merged["nama_provinsi"].unique()
         if p and p != "TIDAK TERDEFINISI" and not str(p).isdigit() and str(p).lower() != "nan"
     ])
-    col_nav1, col_theme, col_nav2 = st.columns([5, 4, 3])
+    col_nav1, col_theme, col_style, col_nav2 = st.columns([3.8, 2.7, 3.0, 2.0])
 
     with col_nav1:
         selected_prov_view = st.selectbox(
@@ -751,6 +751,17 @@ def render_tab_region(df_matrix_school, dfs):
             help="Pilih gradasi warna peta yang nyaman di mata."
         )
         map_color_scale = color_theme_options[selected_theme_name]
+
+    with col_style:
+        map_model_choice = st.selectbox(
+            "🗺️ Model Gaya Peta:",
+            options=[
+                "Peta Vektor Dark (Senada Nasional)",
+                "Peta Satelit / Street (Carto Dark)",
+            ],
+            index=0,
+            help="Peta Vektor Dark senada dengan tema Peta Nasional. Peta Satelit/Street menampilkan garis pantai, jalan, dan detail geografi asli.",
+        )
 
     with col_nav2:
         st.write("")
@@ -815,101 +826,134 @@ def render_tab_region(df_matrix_school, dfs):
                     min_val -= 1.0
                     max_val += 1.0
 
-                fig_map = px.choropleth(
-                    stats_prov_map,
-                    geojson=geojson_id,
-                    locations="Provinsi_Clean",
-                    featureidkey="properties.norm_name",
-                    color="Rata_Rata",
-                    color_continuous_scale=map_color_scale,
-                    range_color=(min_val, max_val),
-                    labels={
-                        "Rata_Rata": "Rata-Rata Skor",
-                        "Provinsi_Clean": "Provinsi",
-                    },
-                    hover_data={
-                        "Jumlah_Peserta": ":,.0f",
-                        "Rata_Rata": ":.2f",
-                        "Min": ":.2f",
-                        "Max": ":.2f",
-                    },
-                    title=(
-                        f"<b>Peta Wilayah Nilai {selected_score_label} per"
-                        " Provinsi</b>"
-                    ),
-                )
-
-                fig_map.update_traces(
-                    marker_line_color="#ffffff", marker_line_width=1.2
-                )
-
-                # Tambahkan label teks nama singkat provinsi di peta nasional
-                prov_centroids = {}
-                for f in geojson_id.get("features", []):
-                    p_name = f.get("properties", {}).get("norm_name")
-                    if p_name:
-                        c_lat, c_lon = _get_feature_centroid(f.get("geometry"))
-                        if c_lat is not None and c_lon is not None:
-                            prov_centroids[p_name] = (c_lat, c_lon)
-
-                # Cek jika ada kolom nama singkat provinsi dari data sekolah / master peserta
-                col_short = next(
-                    (c for c in df_merged.columns if any(k in str(c).lower() for k in ["singkat", "short", "singkatan", "abbr"])),
-                    None
-                )
-                short_name_map = {}
-                if col_short:
-                    for p_raw, s_raw in zip(df_merged["nama_provinsi"], df_merged[col_short]):
-                        if pd.notna(p_raw) and pd.notna(s_raw) and str(s_raw).strip():
-                            short_name_map[_clean_province_name(p_raw)] = str(s_raw).strip().upper()
-
-                p_lats, p_lons, p_texts = [], [], []
-                for _, r_p in stats_prov_map.iterrows():
-                    pn = r_p["Provinsi_Clean"]
-                    if pn in prov_centroids:
-                        clat, clon = prov_centroids[pn]
-                        p_lats.append(clat)
-                        p_lons.append(clon)
-                        # Gunakan nama singkat dari tabel sekolah jika ada, atau singkatan standar
-                        label_name = short_name_map.get(pn, PROVINSI_SINGKAT_MAP.get(pn, pn))
-                        p_texts.append(label_name)
-
-                if p_lats:
-                    fig_map.add_trace(
-                        go.Scattergeo(
-                            lon=p_lons,
-                            lat=p_lats,
-                            text=p_texts,
-                            mode="text",
-                            textposition="middle center",
-                            textfont=dict(
-                                family="Inter, Roboto, Arial, sans-serif",
-                                size=9,
-                                color="#ffffff",
-                            ),
-                            hoverinfo="skip",
-                            showlegend=False,
-                        )
+                if map_model_choice == "Peta Satelit / Street (Carto Dark)":
+                    fig_map = px.choropleth_mapbox(
+                        stats_prov_map,
+                        geojson=geojson_id,
+                        locations="Provinsi_Clean",
+                        featureidkey="properties.norm_name",
+                        color="Rata_Rata",
+                        color_continuous_scale=map_color_scale,
+                        range_color=(min_val, max_val),
+                        mapbox_style="carto-darkmatter",
+                        center={"lat": -2.5, "lon": 118.0},
+                        zoom=3.8,
+                        opacity=0.78,
+                        labels={
+                            "Rata_Rata": "Rata-Rata Skor",
+                            "Provinsi_Clean": "Provinsi",
+                        },
+                        hover_data={
+                            "Jumlah_Peserta": ":,.0f",
+                            "Rata_Rata": ":.2f",
+                            "Min": ":.2f",
+                            "Max": ":.2f",
+                        },
+                        title=f"<b>Peta Wilayah Nilai {selected_score_label} per Provinsi</b>",
+                    )
+                    fig_map.update_layout(
+                        margin={"r": 0, "t": 40, "l": 0, "b": 0},
+                        paper_bgcolor="#0e1117",
+                        plot_bgcolor="#0e1117",
+                        font_color="#ffffff",
+                        height=550,
+                    )
+                else:
+                    fig_map = px.choropleth(
+                        stats_prov_map,
+                        geojson=geojson_id,
+                        locations="Provinsi_Clean",
+                        featureidkey="properties.norm_name",
+                        color="Rata_Rata",
+                        color_continuous_scale=map_color_scale,
+                        range_color=(min_val, max_val),
+                        labels={
+                            "Rata_Rata": "Rata-Rata Skor",
+                            "Provinsi_Clean": "Provinsi",
+                        },
+                        hover_data={
+                            "Jumlah_Peserta": ":,.0f",
+                            "Rata_Rata": ":.2f",
+                            "Min": ":.2f",
+                            "Max": ":.2f",
+                        },
+                        title=(
+                            f"<b>Peta Wilayah Nilai {selected_score_label} per"
+                            " Provinsi</b>"
+                        ),
                     )
 
-                fig_map.update_geos(
-                    fitbounds="locations",
-                    visible=False,
-                    showcoastlines=False,
-                    showsubunits=False,
-                    showland=True,
-                    landcolor="#181c24",
-                    showocean=True,
-                    oceancolor="#0e1117",
-                )
+                    fig_map.update_traces(
+                        marker_line_color="#ffffff", marker_line_width=1.2
+                    )
 
-                fig_map.update_layout(
-                    margin={"r": 0, "t": 40, "l": 0, "b": 0},
-                    paper_bgcolor="#0e1117",
-                    plot_bgcolor="#0e1117",
-                    font_color="#ffffff",
-                    height=550,
-                )
+                    # Tambahkan label teks nama singkat provinsi di peta nasional
+                    prov_centroids = {}
+                    for f in geojson_id.get("features", []):
+                        p_name = f.get("properties", {}).get("norm_name")
+                        if p_name:
+                            c_lat, c_lon = _get_feature_centroid(f.get("geometry"))
+                            if c_lat is not None and c_lon is not None:
+                                prov_centroids[p_name] = (c_lat, c_lon)
+
+                    # Cek jika ada kolom nama singkat provinsi dari data sekolah / master peserta
+                    col_short = next(
+                        (c for c in df_merged.columns if any(k in str(c).lower() for k in ["singkat", "short", "singkatan", "abbr"])),
+                        None
+                    )
+                    short_name_map = {}
+                    if col_short:
+                        for p_raw, s_raw in zip(df_merged["nama_provinsi"], df_merged[col_short]):
+                            if pd.notna(p_raw) and pd.notna(s_raw) and str(s_raw).strip():
+                                short_name_map[_clean_province_name(p_raw)] = str(s_raw).strip().upper()
+
+                    p_lats, p_lons, p_texts = [], [], []
+                    for _, r_p in stats_prov_map.iterrows():
+                        pn = r_p["Provinsi_Clean"]
+                        if pn in prov_centroids:
+                            clat, clon = prov_centroids[pn]
+                            p_lats.append(clat)
+                            p_lons.append(clon)
+                            label_name = short_name_map.get(pn, PROVINSI_SINGKAT_MAP.get(pn, pn))
+                            p_texts.append(label_name)
+
+                    if p_lats:
+                        fig_map.add_trace(
+                            go.Scattergeo(
+                                lon=p_lons,
+                                lat=p_lats,
+                                text=p_texts,
+                                mode="text",
+                                textposition="middle center",
+                                textfont=dict(
+                                    family="Inter, Roboto, Arial, sans-serif",
+                                    size=9,
+                                    color="#ffffff",
+                                ),
+                                hoverinfo="skip",
+                                showlegend=False,
+                            )
+                        )
+
+                    fig_map.update_geos(
+                        fitbounds="locations",
+                        visible=False,
+                        showcoastlines=False,
+                        showsubunits=False,
+                        showland=True,
+                        landcolor="#181c24",
+                        showocean=True,
+                        oceancolor="#0e1117",
+                        bgcolor="#0e1117",
+                    )
+
+                    fig_map.update_layout(
+                        margin={"r": 0, "t": 40, "l": 0, "b": 0},
+                        paper_bgcolor="#0e1117",
+                        plot_bgcolor="#0e1117",
+                        font_color="#ffffff",
+                        height=550,
+                    )
 
                 st.plotly_chart(fig_map, use_container_width=True)
 
@@ -992,85 +1036,150 @@ def render_tab_region(df_matrix_school, dfs):
                     min_k -= 1.0
                     max_k += 1.0
 
-                fig_kab_map = px.choropleth(
-                    stats_kab_map,
-                    geojson=prov_geojson,
-                    locations="Kabupaten_Clean",
-                    featureidkey="properties.norm_kab",
-                    color="Rata_Rata",
-                    color_continuous_scale=map_color_scale,
-                    range_color=(min_k, max_k),
-                    labels={
-                        "Rata_Rata": "Rata-Rata Skor",
-                        "Kabupaten_Clean": "Kabupaten / Kota",
-                    },
-                    hover_data={
-                        "Jumlah_Peserta": ":,.0f",
-                        "Rata_Rata": ":.2f",
-                        "Min": ":.2f",
-                        "Max": ":.2f",
-                    },
-                    title=(
-                        f"<b>Sebaran Nilai Kabupaten/Kota di Provinsi {target_prov}</b>"
-                    ),
-                )
+                if map_model_choice == "Peta Satelit / Street (Carto Dark)":
+                    coords_all = []
+                    for fc in target_features:
+                        geom = fc.get("geometry", {})
+                        t_g = geom.get("type", "")
+                        c_g = geom.get("coordinates", [])
+                        if t_g == "Polygon":
+                            for ring in c_g:
+                                for pt in ring:
+                                    coords_all.append(pt)
+                        elif t_g == "MultiPolygon":
+                            for poly in c_g:
+                                for ring in poly:
+                                    for pt in ring:
+                                        coords_all.append(pt)
 
-                fig_kab_map.update_traces(
-                    marker_line_color="#ffffff", marker_line_width=1.5
-                )
+                    if coords_all:
+                        lons = [p[0] for p in coords_all]
+                        lats = [p[1] for p in coords_all]
+                        min_lon, max_lon = min(lons), max(lons)
+                        min_lat, max_lat = min(lats), max(lats)
+                        c_lon = (min_lon + max_lon) / 2.0
+                        c_lat = (min_lat + max_lat) / 2.0
+                        span = max(max_lon - min_lon, max_lat - min_lat)
+                        zoom_val = max(5.5, min(10.5, 8.8 - float(np.log2(max(span, 0.05)))))
+                    else:
+                        c_lat, c_lon, zoom_val = -6.2, 106.8, 9.5
 
-                # Tambahkan label teks nama kabupaten/kota di peta drill-down
-                kab_centroids = {}
-                for fc in target_features:
-                    kn = fc["properties"].get("norm_kab")
-                    if kn:
-                        c_lat, c_lon = _get_feature_centroid(fc.get("geometry"))
-                        if c_lat is not None and c_lon is not None:
-                            kab_centroids[kn] = (c_lat, c_lon)
-
-                k_lats, k_lons, k_texts = [], [], []
-                for _, r_k in stats_kab_map.iterrows():
-                    kn = r_k["Kabupaten_Clean"]
-                    if kn in kab_centroids:
-                        clat, clon = kab_centroids[kn]
-                        k_lats.append(clat)
-                        k_lons.append(clon)
-                        k_texts.append(kn)
-
-                if k_lats:
-                    fig_kab_map.add_trace(
-                        go.Scattergeo(
-                            lon=k_lons,
-                            lat=k_lats,
-                            text=k_texts,
-                            mode="text",
-                            textposition="middle center",
-                            textfont=dict(
-                                family="Arial, sans-serif",
-                                size=10,
-                                color="#ffffff",
-                            ),
-                            hoverinfo="skip",
-                            showlegend=False,
-                        )
+                    fig_kab_map = px.choropleth_mapbox(
+                        stats_kab_map,
+                        geojson=prov_geojson,
+                        locations="Kabupaten_Clean",
+                        featureidkey="properties.norm_kab",
+                        color="Rata_Rata",
+                        color_continuous_scale=map_color_scale,
+                        range_color=(min_k, max_k),
+                        mapbox_style="carto-darkmatter",
+                        center={"lat": c_lat, "lon": c_lon},
+                        zoom=zoom_val,
+                        opacity=0.78,
+                        labels={
+                            "Rata_Rata": "Rata-Rata Skor",
+                            "Kabupaten_Clean": "Kabupaten / Kota",
+                        },
+                        hover_data={
+                            "Jumlah_Peserta": ":,.0f",
+                            "Rata_Rata": ":.2f",
+                            "Min": ":.2f",
+                            "Max": ":.2f",
+                        },
+                        title=f"<b>Sebaran Nilai Kabupaten/Kota di Provinsi {target_prov}</b>",
+                    )
+                    fig_kab_map.update_layout(
+                        margin={"r": 0, "t": 40, "l": 0, "b": 0},
+                        paper_bgcolor="#0e1117",
+                        plot_bgcolor="#0e1117",
+                        font_color="#ffffff",
+                        height=550,
+                    )
+                else:
+                    fig_kab_map = px.choropleth(
+                        stats_kab_map,
+                        geojson=prov_geojson,
+                        locations="Kabupaten_Clean",
+                        featureidkey="properties.norm_kab",
+                        color="Rata_Rata",
+                        color_continuous_scale=map_color_scale,
+                        range_color=(min_k, max_k),
+                        labels={
+                            "Rata_Rata": "Rata-Rata Skor",
+                            "Kabupaten_Clean": "Kabupaten / Kota",
+                        },
+                        hover_data={
+                            "Jumlah_Peserta": ":,.0f",
+                            "Rata_Rata": ":.2f",
+                            "Min": ":.2f",
+                            "Max": ":.2f",
+                        },
+                        title=(
+                            f"<b>Sebaran Nilai Kabupaten/Kota di Provinsi {target_prov}</b>"
+                        ),
                     )
 
-                fig_kab_map.update_geos(
-                    fitbounds="locations",
-                    visible=False,
-                    showcoastlines=False,
-                    showsubunits=False,
-                    showland=False,
-                    showocean=False,
-                )
+                    fig_kab_map.update_traces(
+                        marker_line_color="#ffffff", marker_line_width=1.5
+                    )
 
-                fig_kab_map.update_layout(
-                    margin={"r": 0, "t": 40, "l": 0, "b": 0},
-                    paper_bgcolor="#0e1117",
-                    plot_bgcolor="#0e1117",
-                    font_color="#ffffff",
-                    height=520,
-                )
+                    # Tambahkan label teks nama kabupaten/kota di peta drill-down
+                    kab_centroids = {}
+                    for fc in target_features:
+                        kn = fc["properties"].get("norm_kab")
+                        if kn:
+                            c_lat, c_lon = _get_feature_centroid(fc.get("geometry"))
+                            if c_lat is not None and c_lon is not None:
+                                kab_centroids[kn] = (c_lat, c_lon)
+
+                    k_lats, k_lons, k_texts = [], [], []
+                    for _, r_k in stats_kab_map.iterrows():
+                        kn = r_k["Kabupaten_Clean"]
+                        if kn in kab_centroids:
+                            clat, clon = kab_centroids[kn]
+                            k_lats.append(clat)
+                            k_lons.append(clon)
+                            k_texts.append(kn)
+
+                    if k_lats:
+                        fig_kab_map.add_trace(
+                            go.Scattergeo(
+                                lon=k_lons,
+                                lat=k_lats,
+                                text=k_texts,
+                                mode="text",
+                                textposition="middle center",
+                                textfont=dict(
+                                    family="Inter, Roboto, Arial, sans-serif",
+                                    size=10,
+                                    color="#ffffff",
+                                ),
+                                hoverinfo="skip",
+                                showlegend=False,
+                            )
+                        )
+
+                    fig_kab_map.update_geos(
+                        fitbounds="locations",
+                        visible=False,
+                        showcoastlines=True,
+                        coastlinecolor="#334155",
+                        showsubunits=True,
+                        subunitcolor="#334155",
+                        showland=True,
+                        landcolor="#181c24",
+                        showocean=True,
+                        oceancolor="#0e1117",
+                        bgcolor="#0e1117",
+                    )
+
+                    fig_kab_map.update_layout(
+                        margin={"r": 0, "t": 40, "l": 0, "b": 0},
+                        paper_bgcolor="#0e1117",
+                        plot_bgcolor="#0e1117",
+                        font_color="#ffffff",
+                        height=550,
+                    )
 
                 st.plotly_chart(fig_kab_map, use_container_width=True)
             else:

@@ -42,7 +42,6 @@ def render_tab_school(df_matrix_school, dfs=None, irt_results=None):
 
     # --- 1. AMBIL DATA (MEMORY UTAMA -> FALLBACK MYSQL) ---
     df_master = None
-    is_from_mysql = False
 
     # Jika data di memori sudah memiliki informasi sekolah dan nilai, gunakan langsung agar cepat
     cand_df = st.session_state.get("df_peserta_skor")
@@ -66,13 +65,11 @@ def render_tab_school(df_matrix_school, dfs=None, irt_results=None):
             if not essential_cols:
                 essential_cols = list(cand_df.columns[:30])
             df_master = cand_df[essential_cols].copy()
-            is_from_mysql = False
 
     if df_master is None or df_master.empty:
         df_db = load_data_from_mysql()
         if df_db is not None and not df_db.empty:
             df_master = df_db.copy()
-            is_from_mysql = True
         else:
             st.info(
                 "💡 **Informasi:** Berkas **Master Sekolah** (`sekolah`) belum diunggah atau "

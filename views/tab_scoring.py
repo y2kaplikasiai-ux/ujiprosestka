@@ -208,7 +208,7 @@ def render_tab_scoring(df_matrix, dfs=None):
         if len(df_chart_source) > 50000
         else df_chart_source
     )
-    fig_score = render_score_histogram(df_chart)
+    fig_score = render_score_histogram(df_chart, col_type="skor_mentah")
     st.plotly_chart(fig_score, use_container_width=True)
 
     # --- TABLE DISPLAY ---

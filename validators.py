@@ -1,6 +1,5 @@
 # validators.py
 import csv
-import io
 import re
 import pandas as pd
 
@@ -15,9 +14,29 @@ def clean_col(col):
 
 
 KNOWN_MAPEL_FALLBACK = {
-    "AMATW": "Matematika Wajib",
-    "ABIGW": "Bahasa Inggris Wajib",
-    "ABINW": "Bahasa Indonesia Wajib",
+    "AMATW": "Matematika Utama",
+    "ABINW": "Bahasa Indonesia Utama",
+    "ABIGW": "Bahasa Inggris Utama",
+    "ABINP": "Bahasa Indonesia Lanjutan",
+    "AMATP": "Matematika Lanjutan",
+    "ABIGP": "Bahasa Inggris Lanjutan",
+    "AJEPP": "Bahasa Jepang",
+    "AKIMP": "Kimia",
+    "ASOSP": "Sosiologi",
+    "AKORP": "Bahasa Korea",
+    "APRCP": "Bahasa Prancis",
+    "AFISP": "Fisika",
+    "AARBP": "Bahasa Arab",
+    "ASEJP": "Sejarah",
+    "AMANP": "Bahasa Mandarin",
+    "AJERP": "Bahasa Jerman",
+    "APKNP": "Pendidikan Pancasila",
+    "ABIOP": "Biologi",
+    "AEKOP": "Ekonomi",
+    "AANTP": "Antropologi",
+    "ANTROP": "Antropologi",
+    "AGEOP": "Geografi",
+    "KPKWP": "Projek Kreatif dan Kewirausahaan",
     "SEJ": "Sejarah",
     "EKO": "Ekonomi",
     "GEO": "Geografi",
@@ -32,8 +51,30 @@ KNOWN_MAPEL_FALLBACK = {
 
 
 def get_mapel_lookup_dict(df_mpl=None):
-    """Mengekstrak kamus pemetaan kode_mapel -> nama_mapel dari DataFrame tabel master mapel."""
+    """Mengekstrak kamus pemetaan kode_mapel -> nama_mapel dari DataFrame atau tb_master_mapel."""
     lookup = dict(KNOWN_MAPEL_FALLBACK)
+
+    # 1. Coba ambil dari session_state jika df_mpl belum diberikan
+    if df_mpl is None or not isinstance(df_mpl, pd.DataFrame) or df_mpl.empty:
+        try:
+            import streamlit as st
+            if "df_mapel" in st.session_state and isinstance(st.session_state["df_mapel"], pd.DataFrame) and not st.session_state["df_mapel"].empty:
+                df_mpl = st.session_state["df_mapel"]
+        except Exception:
+            pass
+
+    # 2. Coba baca dari database MySQL (tb_master_mapel) jika belum ada
+    if df_mpl is None or not isinstance(df_mpl, pd.DataFrame) or df_mpl.empty:
+        try:
+            from db_helper import get_db_connection
+            engine = get_db_connection()
+            if engine is not None:
+                df_db_m = pd.read_sql("SELECT * FROM tb_master_mapel", engine)
+                if not df_db_m.empty:
+                    df_mpl = df_db_m
+        except Exception:
+            pass
+
     if df_mpl is None or not isinstance(df_mpl, pd.DataFrame) or df_mpl.empty:
         return lookup
 

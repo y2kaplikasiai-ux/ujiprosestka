@@ -2,6 +2,7 @@
 import numpy as np
 import pandas as pd
 import pymysql
+# pyrefly: ignore [missing-import]
 from sqlalchemy import create_engine, text
 from views.tab_region import resolve_province_info
 
@@ -221,8 +222,8 @@ def extract_active_soal_from_respon(df_respon):
 
 
 def process_scoring(df_respon, df_kunci, batch_size=50000):
-    df_respon = df_respon.copy()
-    df_kunci = df_kunci.copy()
+    df_respon = df_respon.reset_index(drop=True)
+    df_kunci = df_kunci.reset_index(drop=True)
 
     df_respon.columns = df_respon.columns.astype(str).str.strip().str.lower()
     df_kunci.columns = df_kunci.columns.astype(str).str.strip().str.lower()
@@ -392,6 +393,8 @@ def process_scoring(df_respon, df_kunci, batch_size=50000):
                         df_mpl_matrix.insert(insert_pos, "kode_paket", mpl_sample_resp[kode_paket_col].values)
 
                     orig_indices = mpl_sample_resp.index.to_numpy()
+                    if len(orig_indices) > 0 and (np.max(orig_indices) >= len(skor_mentah_arr) or np.min(orig_indices) < 0):
+                        orig_indices = np.clip(orig_indices, 0, len(skor_mentah_arr) - 1)
                     df_mpl_matrix["skor_mentah"] = skor_mentah_arr[orig_indices]
                     df_mpl_matrix["Jumlah_Soal"] = jumlah_soal_arr[orig_indices]
                     df_mpl_matrix["Nilai_Konversi"] = df_matrix["Nilai_Konversi"].iloc[orig_indices].values

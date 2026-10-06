@@ -652,7 +652,7 @@ def reset_database(mode: str = "response_only") -> tuple[bool, str]:
 
 
 def save_master_data_to_db(dfs: dict) -> tuple[bool, str]:
-    """Menyimpan berkas master (biodata, sekolah, kunci, mapel) ke MySQL jika diunggah."""
+    """Menyimpan berkas master (sekolah, kunci, mapel, kompetensi, peta_paket, biodata) ke MySQL secara independen."""
     if not dfs or not isinstance(dfs, dict):
         return True, "Tidak ada data master."
     try:
@@ -660,9 +660,11 @@ def save_master_data_to_db(dfs: dict) -> tuple[bool, str]:
         if engine is None:
             return False, "Koneksi DB gagal."
 
-        with engine.begin() as conn:
-            # 1. Master Sekolah
-            if "sekolah" in dfs and dfs["sekolah"] is not None and not dfs["sekolah"].empty:
+        saved_items = []
+
+        # 1. Master Sekolah (Independen)
+        if "sekolah" in dfs and dfs["sekolah"] is not None and not dfs["sekolah"].empty:
+            try:
                 df_sek = dfs["sekolah"].copy()
                 df_sek.columns = [str(c).strip().lower() for c in df_sek.columns]
                 col_k = next((c for c in df_sek.columns if "sekolah" in c and ("kode" in c or "id" in c or "npsn" in c)), df_sek.columns[0])
@@ -672,24 +674,138 @@ def save_master_data_to_db(dfs: dict) -> tuple[bool, str]:
                 col_kdp = next((c for c in df_sek.columns if "kd_prop" in c or "kode_prov" in c), None)
 
                 df_sek_save = pd.DataFrame()
-                df_sek_save["kode_sekolah"] = df_sek[col_k].astype(str).str.strip().str.upper()
-                df_sek_save["nama_sekolah"] = df_sek[col_n].astype(str).str.strip() if col_n else df_sek_save["kode_sekolah"]
-                df_sek_save["nama_kabupaten"] = df_sek[col_kab].astype(str).str.strip() if col_kab else "-"
-                df_sek_save["nama_provinsi"] = df_sek[col_prov].astype(str).str.strip() if col_prov else "-"
-                df_sek_save["kode_provinsi"] = df_sek[col_kdp].astype(str).str.strip() if col_kdp else "-"
-                df_sek_save = df_sek_save.drop_duplicates(subset=["kode_sekolah"])
+                df_sek_save["kode_sekolah"] = df_sek[col_k].astype(str).str.strip().str.upper().str[:50]
+                df_sek_save["nama_sekolah"] = df_sek[col_n].astype(str).str.strip().str[:255] if col_n else df_sek_save["kode_sekolah"]
+                df_sek_save["nama_kabupaten"] = df_sek[col_kab].astype(str).str.strip().str[:100] if col_kab else "-"
+                df_sek_save["nama_provinsi"] = df_sek[col_prov].astype(str).str.strip().str[:100] if col_prov else "-"
+                df_sek_save["kode_provinsi"] = df_sek[col_kdp].astype(str).str.strip().str[:10] if col_kdp else "-"
+                df_sek_save = df_sek_save[df_sek_save["kode_sekolah"] != ""].drop_duplicates(subset=["kode_sekolah"])
 
-                try:
+                with engine.begin() as conn:
                     curr_c = conn.execute(text("SELECT COUNT(*) FROM tb_master_sekolah;")).scalar() or 0
-                except Exception:
-                    curr_c = 0
+                    if curr_c != len(df_sek_save):
+                        conn.execute(text("TRUNCATE TABLE tb_master_sekolah;"))
+                        df_sek_save.to_sql("tb_master_sekolah", conn, if_exists="append", index=False, chunksize=5000)
+                saved_items.append(f"Sekolah ({len(df_sek_save)})")
+            except Exception as e_sek:
+                print(f"Catatan simpan master sekolah: {e_sek}")
 
-                if curr_c != len(df_sek_save):
-                    conn.execute(text("TRUNCATE TABLE tb_master_sekolah;"))
-                    df_sek_save.to_sql("tb_master_sekolah", conn, if_exists="append", index=False, chunksize=10000)
+        # 2. Master Kunci (Independen)
+        if "kunci" in dfs and dfs["kunci"] is not None and not dfs["kunci"].empty:
+            try:
+                df_k = dfs["kunci"].copy()
+                df_k.columns = [str(c).strip().lower() for c in df_k.columns]
+                col_s = next((c for c in df_k.columns if any(kw in c for kw in ["kode_soal", "id_soal", "soal", "kd_soal", "nomorsoal", "nosoal", "kode_paket", "kodepaket", "paket"])), df_k.columns[0])
+                col_m = next((c for c in df_k.columns if any(kw in c for kw in ["mapel", "mata_pelajaran", "mata pelajaran", "subject", "kode_mapel", "nama_mapel"])), None)
+                col_ans = next((c for c in df_k.columns if any(kw in c for kw in ["kunci", "jawaban", "key", "ans"])), df_k.columns[1] if len(df_k.columns)>1 else df_k.columns[0])
 
-            # 2. Master Biodata
-            if "biodata" in dfs and dfs["biodata"] is not None and not dfs["biodata"].empty:
+                df_k_save = pd.DataFrame()
+                df_k_save["kode_soal"] = df_k[col_s].astype(str).str.strip().str[:100]
+                df_k_save["mapel"] = df_k[col_m].astype(str).str.strip().str.upper().str[:100] if col_m else "UMUM"
+                df_k_save["kunci"] = df_k[col_ans].astype(str).str.strip().str.upper().str[:20]
+                df_k_save = df_k_save[df_k_save["kode_soal"] != ""].drop_duplicates(subset=["kode_soal", "mapel"])
+
+                with engine.begin() as conn:
+                    for mpl in df_k_save["mapel"].unique():
+                        conn.execute(text("DELETE FROM tb_master_kunci WHERE mapel = :m;"), {"m": mpl})
+                    df_k_save.to_sql("tb_master_kunci", conn, if_exists="append", index=False, chunksize=5000)
+                saved_items.append(f"Kunci ({len(df_k_save)})")
+            except Exception as e_k:
+                print(f"Catatan simpan master kunci: {e_k}")
+
+        # 3. Master Mapel (Independen)
+        if "mapel" in dfs and dfs["mapel"] is not None and not dfs["mapel"].empty:
+            try:
+                df_m = dfs["mapel"].copy()
+                df_m.columns = [str(c).strip().lower() for c in df_m.columns]
+                col_km = next((c for c in df_m.columns if any(kw in c for kw in ["kode", "kd", "id"])), df_m.columns[0])
+                col_nm = next((c for c in df_m.columns if c != col_km and any(kw in c for kw in ["nama", "pelajaran", "mapel"])), None)
+                if not col_nm:
+                    col_nm = df_m.columns[1] if len(df_m.columns) > 1 else col_km
+
+                df_m_save = pd.DataFrame()
+                df_m_save["kode_mapel"] = df_m[col_km].astype(str).str.strip().str.upper().str[:50]
+                df_m_save["nama_mapel"] = df_m[col_nm].astype(str).str.strip().str[:100]
+                df_m_save = df_m_save[df_m_save["kode_mapel"] != ""].drop_duplicates(subset=["kode_mapel"])
+
+                with engine.begin() as conn:
+                    curr_c = conn.execute(text("SELECT COUNT(*) FROM tb_master_mapel;")).scalar() or 0
+                    if curr_c != len(df_m_save):
+                        conn.execute(text("TRUNCATE TABLE tb_master_mapel;"))
+                        df_m_save.to_sql("tb_master_mapel", conn, if_exists="append", index=False)
+                saved_items.append(f"Mapel ({len(df_m_save)})")
+            except Exception as e_m:
+                print(f"Catatan simpan master mapel: {e_m}")
+
+        # 4. Master Kompetensi / Kisi-Kisi (Independen)
+        if "kompetensi" in dfs and dfs["kompetensi"] is not None and not dfs["kompetensi"].empty:
+            try:
+                df_komp = dfs["kompetensi"].copy()
+                df_komp.columns = [str(c).strip().lower() for c in df_komp.columns]
+                col_km = next((c for c in df_komp.columns if "kd_mapel" in c or "kodemapel" in c), None)
+                col_m = next((c for c in df_komp.columns if c in ["mapel", "nama_mapel"]), None)
+                col_b = next((c for c in df_komp.columns if "kodebutir" in c or "butir" in c or "soal" in c), None)
+                col_el = next((c for c in df_komp.columns if "elemen" in c and "sub" not in c), None)
+                col_subel = next((c for c in df_komp.columns if "subelemen" in c), None)
+                col_kmp = next((c for c in df_komp.columns if "kompetensi" in c and "sub" not in c), None)
+                col_subkmp = next((c for c in df_komp.columns if "subkempetensi" in c or "subkompetensi" in c), None)
+                col_ind = next((c for c in df_komp.columns if "indikator" in c), None)
+                col_pkt = next((c for c in df_komp.columns if "paket" in c), None)
+
+                df_komp_save = pd.DataFrame()
+                df_komp_save["kd_mapel"] = df_komp[col_km].astype(str).str.strip().str.upper().str[:50] if col_km else "-"
+                df_komp_save["mapel"] = df_komp[col_m].astype(str).str.strip().str[:100] if col_m else "-"
+                df_komp_save["kodebutir"] = df_komp[col_b].astype(str).str.strip().str[:100] if col_b else "-"
+                df_komp_save["elemen"] = df_komp[col_el].astype(str).str.strip().str[:255] if col_el else "-"
+                df_komp_save["subelemen"] = df_komp[col_subel].astype(str).str.strip().str[:255] if col_subel else "-"
+                df_komp_save["kompetensi"] = df_komp[col_kmp].astype(str).str.strip() if col_kmp else "-"
+                df_komp_save["subkempetensi"] = df_komp[col_subkmp].astype(str).str.strip() if col_subkmp else "-"
+                df_komp_save["indikator"] = df_komp[col_ind].astype(str).str.strip() if col_ind else "-"
+                df_komp_save["paket"] = df_komp[col_pkt].astype(str).str.strip().str[:50] if col_pkt else "-"
+                df_komp_save = df_komp_save.drop_duplicates()
+
+                with engine.begin() as conn:
+                    curr_c = conn.execute(text("SELECT COUNT(*) FROM tb_master_kompetensi;")).scalar() or 0
+                    if curr_c != len(df_komp_save):
+                        conn.execute(text("TRUNCATE TABLE tb_master_kompetensi;"))
+                        df_komp_save.to_sql("tb_master_kompetensi", conn, if_exists="append", index=False, chunksize=5000)
+                saved_items.append(f"Kisi-kisi ({len(df_komp_save)})")
+            except Exception as ex_komp:
+                print(f"Catatan simpan master kompetensi: {ex_komp}")
+
+        # 5. Master Pemetaan Paket (Independen)
+        if "peta_paket" in dfs and dfs["peta_paket"] is not None and not dfs["peta_paket"].empty:
+            try:
+                df_pkt = dfs["peta_paket"].copy()
+                df_pkt.columns = [str(c).strip().lower() for c in df_pkt.columns]
+                col_km = next((c for c in df_pkt.columns if "kode_mapel" in c or "kd_mapel" in c or "kodemapel" in c), None)
+                col_kp = next((c for c in df_pkt.columns if "kode_paket" in c or "kodepaket" in c or "paket" in c), None)
+                col_no = next((c for c in df_pkt.columns if "urut" in c or "no" in c), None)
+                col_ns = next((c for c in df_pkt.columns if "namasoal" in c or "soal" in c or "butir" in c), None)
+                col_zn = next((c for c in df_pkt.columns if "zona" in c), None)
+                col_ss = next((c for c in df_pkt.columns if "sesi" in c), None)
+
+                df_pkt_save = pd.DataFrame()
+                df_pkt_save["kode_mapel"] = df_pkt[col_km].astype(str).str.strip().str.upper().str[:50] if col_km else "-"
+                df_pkt_save["kode_paket"] = df_pkt[col_kp].astype(str).str.strip().str.upper().str[:50] if col_kp else "-"
+                df_pkt_save["no_urut_soal"] = pd.to_numeric(df_pkt[col_no], errors="coerce").fillna(0).astype(int) if col_no else 0
+                df_pkt_save["namasoal"] = df_pkt[col_ns].astype(str).str.strip().str[:100] if col_ns else "-"
+                df_pkt_save["zona"] = df_pkt[col_zn].astype(str).str.strip().str[:20] if col_zn else "-"
+                df_pkt_save["kode_sesi"] = df_pkt[col_ss].astype(str).str.strip().str[:20] if col_ss else "-"
+                df_pkt_save = df_pkt_save.drop_duplicates()
+
+                with engine.begin() as conn:
+                    curr_c = conn.execute(text("SELECT COUNT(*) FROM tb_master_peta_paket;")).scalar() or 0
+                    if curr_c != len(df_pkt_save):
+                        conn.execute(text("TRUNCATE TABLE tb_master_peta_paket;"))
+                        df_pkt_save.to_sql("tb_master_peta_paket", conn, if_exists="append", index=False, chunksize=10000)
+                saved_items.append(f"Peta Paket ({len(df_pkt_save)})")
+            except Exception as ex_pkt:
+                print(f"Catatan simpan master peta paket: {ex_pkt}")
+
+        # 6. Master Biodata (Independen & Optimasi Skala Besar)
+        if "biodata" in dfs and dfs["biodata"] is not None and not dfs["biodata"].empty:
+            try:
                 df_bio = dfs["biodata"].copy()
                 df_bio.columns = [str(c).strip().lower() for c in df_bio.columns]
                 col_u = next((c for c in df_bio.columns if str(c) in ["username", "user_id", "id_peserta", "idpeserta", "id"]), df_bio.columns[0])
@@ -702,136 +818,28 @@ def save_master_data_to_db(dfs: dict) -> tuple[bool, str]:
                 col_kdp = next((c for c in df_bio.columns if "kd_prop" in c or "kode_prov" in c), None)
 
                 df_bio_save = pd.DataFrame()
-                df_bio_save["username"] = df_bio[col_u].astype(str).str.strip()
-                df_bio_save["nisn"] = df_bio[col_nisn].astype(str).str.strip() if col_nisn else "-"
-                df_bio_save["nama"] = df_bio[col_n].astype(str).str.strip() if col_n else "-"
-                df_bio_save["jenis_kelamin"] = df_bio[col_jk].astype(str).str.strip() if col_jk else "-"
-                df_bio_save["kode_sekolah"] = df_bio[col_sek].astype(str).str[:9].str.upper() if col_sek else "-"
-                df_bio_save["nama_sekolah"] = df_bio[col_sek].astype(str).str.strip() if col_sek else "-"
-                df_bio_save["nama_kabupaten"] = df_bio[col_kab].astype(str).str.strip() if col_kab else "-"
-                df_bio_save["nama_provinsi"] = df_bio[col_prov].astype(str).str.strip() if col_prov else "-"
-                df_bio_save["kd_prop"] = df_bio[col_kdp].astype(str).str.strip() if col_kdp else "-"
-                df_bio_save = df_bio_save.drop_duplicates(subset=["username"])
+                df_bio_save["username"] = df_bio[col_u].astype(str).str.strip().str[:100]
+                df_bio_save["nisn"] = df_bio[col_nisn].astype(str).str.strip().str[:50] if col_nisn else "-"
+                df_bio_save["nama"] = df_bio[col_n].astype(str).str.strip().str[:255] if col_n else "-"
+                df_bio_save["jenis_kelamin"] = df_bio[col_jk].astype(str).str.strip().str[:20] if col_jk else "-"
+                df_bio_save["kode_sekolah"] = df_bio[col_sek].astype(str).str[:9].str.upper().str[:50] if col_sek else "-"
+                df_bio_save["nama_sekolah"] = df_bio[col_sek].astype(str).str.strip().str[:255] if col_sek else "-"
+                df_bio_save["nama_kabupaten"] = df_bio[col_kab].astype(str).str.strip().str[:100] if col_kab else "-"
+                df_bio_save["nama_provinsi"] = df_bio[col_prov].astype(str).str.strip().str[:100] if col_prov else "-"
+                df_bio_save["kd_prop"] = df_bio[col_kdp].astype(str).str.strip().str[:10] if col_kdp else "-"
+                df_bio_save = df_bio_save[df_bio_save["username"] != ""].drop_duplicates(subset=["username"])
 
-                try:
+                with engine.begin() as conn:
                     curr_c = conn.execute(text("SELECT COUNT(*) FROM tb_master_biodata;")).scalar() or 0
-                except Exception:
-                    curr_c = 0
+                    if curr_c != len(df_bio_save):
+                        conn.execute(text("TRUNCATE TABLE tb_master_biodata;"))
+                        df_bio_save.to_sql("tb_master_biodata", conn, if_exists="append", index=False, chunksize=10000)
+                saved_items.append(f"Biodata ({len(df_bio_save)})")
+            except Exception as e_bio:
+                print(f"Catatan simpan master biodata: {e_bio}")
 
-                if curr_c != len(df_bio_save):
-                    conn.execute(text("TRUNCATE TABLE tb_master_biodata;"))
-                    df_bio_save.to_sql("tb_master_biodata", conn, if_exists="append", index=False, chunksize=25000)
-
-            # 3. Master Kunci
-            if "kunci" in dfs and dfs["kunci"] is not None and not dfs["kunci"].empty:
-                df_k = dfs["kunci"].copy()
-                df_k.columns = [str(c).strip().lower() for c in df_k.columns]
-                col_s = next((c for c in df_k.columns if any(kw in c for kw in ["kode_soal", "id_soal", "soal", "kd_soal"])), df_k.columns[0])
-                col_m = next((c for c in df_k.columns if any(kw in c for kw in ["mapel", "mata_pelajaran", "subject"])), None)
-                col_ans = next((c for c in df_k.columns if any(kw in c for kw in ["kunci", "jawaban", "key"])), df_k.columns[1] if len(df_k.columns)>1 else df_k.columns[0])
-
-                df_k_save = pd.DataFrame()
-                df_k_save["kode_soal"] = df_k[col_s].astype(str).str.strip()
-                df_k_save["mapel"] = df_k[col_m].astype(str).str.strip().str.upper() if col_m else "UMUM"
-                df_k_save["kunci"] = df_k[col_ans].astype(str).str.strip().str.upper()
-                df_k_save = df_k_save.drop_duplicates(subset=["kode_soal", "mapel"])
-
-                for mpl in df_k_save["mapel"].unique():
-                    conn.execute(text("DELETE FROM tb_master_kunci WHERE mapel = :m;"), {"m": mpl})
-                df_k_save.to_sql("tb_master_kunci", conn, if_exists="append", index=False)
-
-            # 4. Master Mapel
-            if "mapel" in dfs and dfs["mapel"] is not None and not dfs["mapel"].empty:
-                df_m = dfs["mapel"].copy()
-                df_m.columns = [str(c).strip().lower() for c in df_m.columns]
-                col_km = next((c for c in df_m.columns if "kode" in c or "id" in c), df_m.columns[0])
-                col_nm = next((c for c in df_m.columns if "nama" in c or "mapel" in c), df_m.columns[1] if len(df_m.columns)>1 else df_m.columns[0])
-
-                df_m_save = pd.DataFrame()
-                df_m_save["kode_mapel"] = df_m[col_km].astype(str).str.strip().str.upper()
-                df_m_save["nama_mapel"] = df_m[col_nm].astype(str).str.strip()
-                df_m_save = df_m_save.drop_duplicates(subset=["kode_mapel"])
-
-                try:
-                    curr_c = conn.execute(text("SELECT COUNT(*) FROM tb_master_mapel;")).scalar() or 0
-                except Exception:
-                    curr_c = 0
-
-                if curr_c != len(df_m_save):
-                    conn.execute(text("TRUNCATE TABLE tb_master_mapel;"))
-                    df_m_save.to_sql("tb_master_mapel", conn, if_exists="append", index=False)
-
-            # 5. Master Kompetensi / Kisi-Kisi
-            if "kompetensi" in dfs and dfs["kompetensi"] is not None and not dfs["kompetensi"].empty:
-                try:
-                    df_komp = dfs["kompetensi"].copy()
-                    df_komp.columns = [str(c).strip().lower() for c in df_komp.columns]
-                    col_km = next((c for c in df_komp.columns if "kd_mapel" in c or "kodemapel" in c), None)
-                    col_m = next((c for c in df_komp.columns if c in ["mapel", "nama_mapel"]), None)
-                    col_b = next((c for c in df_komp.columns if "kodebutir" in c or "butir" in c or "soal" in c), None)
-                    col_el = next((c for c in df_komp.columns if "elemen" in c and "sub" not in c), None)
-                    col_subel = next((c for c in df_komp.columns if "subelemen" in c), None)
-                    col_kmp = next((c for c in df_komp.columns if "kompetensi" in c and "sub" not in c), None)
-                    col_subkmp = next((c for c in df_komp.columns if "subkempetensi" in c or "subkompetensi" in c), None)
-                    col_ind = next((c for c in df_komp.columns if "indikator" in c), None)
-                    col_pkt = next((c for c in df_komp.columns if "paket" in c), None)
-
-                    df_komp_save = pd.DataFrame()
-                    df_komp_save["kd_mapel"] = df_komp[col_km].astype(str).str.strip().str.upper() if col_km else "-"
-                    df_komp_save["mapel"] = df_komp[col_m].astype(str).str.strip() if col_m else "-"
-                    df_komp_save["kodebutir"] = df_komp[col_b].astype(str).str.strip() if col_b else "-"
-                    df_komp_save["elemen"] = df_komp[col_el].astype(str).str.strip() if col_el else "-"
-                    df_komp_save["subelemen"] = df_komp[col_subel].astype(str).str.strip() if col_subel else "-"
-                    df_komp_save["kompetensi"] = df_komp[col_kmp].astype(str).str.strip() if col_kmp else "-"
-                    df_komp_save["subkempetensi"] = df_komp[col_subkmp].astype(str).str.strip() if col_subkmp else "-"
-                    df_komp_save["indikator"] = df_komp[col_ind].astype(str).str.strip() if col_ind else "-"
-                    df_komp_save["paket"] = df_komp[col_pkt].astype(str).str.strip() if col_pkt else "-"
-                    df_komp_save = df_komp_save.drop_duplicates()
-
-                    try:
-                        curr_c = conn.execute(text("SELECT COUNT(*) FROM tb_master_kompetensi;")).scalar() or 0
-                    except Exception:
-                        curr_c = 0
-
-                    if curr_c != len(df_komp_save):
-                        conn.execute(text("TRUNCATE TABLE tb_master_kompetensi;"))
-                        df_komp_save.to_sql("tb_master_kompetensi", conn, if_exists="append", index=False, chunksize=5000)
-                except Exception as ex_komp:
-                    print(f"Catatan simpan master kompetensi: {ex_komp}")
-
-            # 6. Master Pemetaan Paket
-            if "peta_paket" in dfs and dfs["peta_paket"] is not None and not dfs["peta_paket"].empty:
-                try:
-                    df_pkt = dfs["peta_paket"].copy()
-                    df_pkt.columns = [str(c).strip().lower() for c in df_pkt.columns]
-                    col_km = next((c for c in df_pkt.columns if "kode_mapel" in c or "kd_mapel" in c or "kodemapel" in c), None)
-                    col_kp = next((c for c in df_pkt.columns if "kode_paket" in c or "kodepaket" in c or "paket" in c), None)
-                    col_no = next((c for c in df_pkt.columns if "urut" in c or "no" in c), None)
-                    col_ns = next((c for c in df_pkt.columns if "namasoal" in c or "soal" in c or "butir" in c), None)
-                    col_zn = next((c for c in df_pkt.columns if "zona" in c), None)
-                    col_ss = next((c for c in df_pkt.columns if "sesi" in c), None)
-
-                    df_pkt_save = pd.DataFrame()
-                    df_pkt_save["kode_mapel"] = df_pkt[col_km].astype(str).str.strip().str.upper() if col_km else "-"
-                    df_pkt_save["kode_paket"] = df_pkt[col_kp].astype(str).str.strip().str.upper() if col_kp else "-"
-                    df_pkt_save["no_urut_soal"] = pd.to_numeric(df_pkt[col_no], errors="coerce").fillna(0).astype(int) if col_no else 0
-                    df_pkt_save["namasoal"] = df_pkt[col_ns].astype(str).str.strip() if col_ns else "-"
-                    df_pkt_save["zona"] = df_pkt[col_zn].astype(str).str.strip() if col_zn else "-"
-                    df_pkt_save["kode_sesi"] = df_pkt[col_ss].astype(str).str.strip() if col_ss else "-"
-                    df_pkt_save = df_pkt_save.drop_duplicates()
-
-                    try:
-                        curr_c = conn.execute(text("SELECT COUNT(*) FROM tb_master_peta_paket;")).scalar() or 0
-                    except Exception:
-                        curr_c = 0
-
-                    if curr_c != len(df_pkt_save):
-                        conn.execute(text("TRUNCATE TABLE tb_master_peta_paket;"))
-                        df_pkt_save.to_sql("tb_master_peta_paket", conn, if_exists="append", index=False, chunksize=25000)
-                except Exception as ex_pkt:
-                    print(f"Catatan simpan master peta paket: {ex_pkt}")
-
-        return True, "Data master berhasil disimpan ke MySQL."
+        msg = f"Data master berhasil disimpan: {', '.join(saved_items)}" if saved_items else "Tidak ada perubahan data master."
+        return True, msg
     except Exception as e:
         return False, f"Gagal simpan data master: {e}"
 

@@ -1,7 +1,6 @@
 import numpy as np
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
 import streamlit as st
 from validators import get_mapel_lookup_dict
 
@@ -155,6 +154,7 @@ def render_tab_ctt(ctt_res, df_matrix=None, dfs=None):
 
     total_items = len(df_items)
     mean_p = p_series.dropna().mean() if not p_series.dropna().empty else 0.0
+    mean_d = d_series.dropna().mean() if not d_series.dropna().empty else 0.0
     alpha_map = ctt_res.get("alpha_by_mapel", {})
     if "selected_mapel" in locals() and selected_mapel and selected_mapel in alpha_map:
         rel_val = alpha_map[selected_mapel]
@@ -187,7 +187,9 @@ def render_tab_ctt(ctt_res, df_matrix=None, dfs=None):
     st.markdown("---")
     st.markdown("### 📊 Statistik Deskriptif Analisis Klasik")
 
-    if df_matrix is None:
+    if df_matrix is None or (hasattr(df_matrix, "empty") and df_matrix.empty):
+        df_matrix = st.session_state.get("df_peserta_skor")
+    if df_matrix is None or (hasattr(df_matrix, "empty") and df_matrix.empty):
         df_matrix = st.session_state.get("df_matrix")
 
     konversi_col = None

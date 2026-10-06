@@ -486,11 +486,17 @@ def load_data_from_db():
         st.session_state["df_matrix_school"] = df_peserta
         if df_sekolah is not None and not df_sekolah.empty:
             st.session_state["df_sekolah_agregasi"] = df_sekolah
+        db_masters = load_master_data_from_db()
         st.session_state["val_result"] = {
             "status": True,
             "dataframes": {
                 "respon": df_peserta,
-                "kunci": df_soal,
+                "kunci": db_masters.get("kunci", df_soal),
+                "biodata": db_masters.get("biodata"),
+                "sekolah": db_masters.get("sekolah", df_sekolah),
+                "mapel": db_masters.get("mapel"),
+                "kompetensi": db_masters.get("kompetensi"),
+                "peta_paket": db_masters.get("peta_paket"),
             },
         }
         st.session_state["ctt_res"] = {
@@ -780,6 +786,8 @@ for key, files_list in raw_file_collections.items():
                             df_temp["mapel"] = clean_fn.replace('_', ' ').replace('-', ' ').upper()
                         elif len(files_list) > 1:
                             df_temp["mapel"] = f"MAPEL {idx_fl+1}"
+                        else:
+                            df_temp["mapel"] = "UMUM"
                 df_list.append(df_temp)
         
         if df_list:
@@ -846,10 +854,12 @@ for key, label in configs_info:
         num_rows = len(obj)
         st.sidebar.markdown(f"✅ **{label}**: `{file_desc}` — **{num_rows:,} baris**".replace(",", "."))
     else:
-        # Cek apakah data tersedia dari Database MySQL (Master Tersimpan)
         has_in_db = False
         db_desc = ""
-        if key == "kunci" and db_stat.get("n_master_kunci", 0) > 0:
+        if key == "respon" and db_stat.get("n_peserta_skor", 0) > 0:
+            has_in_db = True
+            db_desc = f"Tersimpan di Database ({db_stat['n_peserta_skor']:,} peserta)".replace(",", ".")
+        elif key == "kunci" and db_stat.get("n_master_kunci", 0) > 0:
             has_in_db = True
             db_desc = f"Tersimpan di Database ({db_stat['n_master_kunci']:,} butir)".replace(",", ".")
         elif key == "biodata" and db_stat.get("n_master_biodata", 0) > 0:
@@ -1059,6 +1069,12 @@ if btn_process:
                 if uploaded_files.get(m_key) is None or uploaded_files[m_key].empty:
                     if m_key in db_masters and db_masters[m_key] is not None and not db_masters[m_key].empty:
                         uploaded_files[m_key] = db_masters[m_key]
+
+            # Simpan berkas master yang diunggah ke database MySQL agar tersimpan permanen
+            try:
+                save_master_data_to_db(uploaded_files)
+            except Exception as ex_m1:
+                print(f"Catatan simpan master langkah 1: {ex_m1}")
 
             val_result = validate_7_files(uploaded_files)
             st.session_state["val_result"] = val_result
